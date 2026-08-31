@@ -16,6 +16,7 @@ import ctypes
 import numpy as np
 import cupy as cp
 from pyscf import gto
+from pyscf import __config__
 from gpu4pyscf.lib import logger
 from gpu4pyscf.lib.cupy_helper import load_library, contract
 from gpu4pyscf.gto.mole import group_basis
@@ -45,6 +46,87 @@ libecp.ECP_ipvip_cart.argtypes = ecp_cart_argtypes
 
 ECP_ATOM_ID = 7
 
+# Enable/disable the shell-pair x ECP-center screening of the task list.
+SCREEN_ECP = getattr(__config__, 'gto_ecp_screen', True)
+
+# Exponential-argument cutoff for the 3-center overlap estimate used to skip
+# negligible (shell i, shell j, ECP center C) triples.  exp(-EXPCUTOFF) ~ 1e-17,
+# matching the value hard-coded in pyscf/lib/gto/nr_ecp.h.
+EXPCUTOFF = 39.0
+
+
+def _ecp_expcutoff(mol):
+    '''Screening cutoff on the exponential argument.  Never looser than the
+    pyscf default (EXPCUTOFF); tightened further when mol.precision is tighter.
+    '''
+    prec = getattr(mol, 'precision', 1e-13)
+    if not prec or prec <= 0:
+        prec = 1e-13
+    return max(EXPCUTOFF, -float(np.log(prec)))
+
+
+def _build_screen_data(_sorted_mol, ecpbas, ecp_loc):
+    '''Per-shell and per-ECP-group data needed by _screen_grid.
+
+    Returns
+        (bas_min_exp[nbas], bas_coords[nbas,3],
+         ecp_min_exp[ngrp], ecp_coords[ngrp,3])
+    where a group is one (l, atom) block delimited by ecp_loc, matching the
+    third column (ksh) of the task grids.  All exponents are the smallest
+    primitive exponent (slowest decay = most conservative bound).
+    '''
+    bas = _sorted_mol._bas
+    env = _sorted_mol._env
+    atom_coords = _sorted_mol.atom_coords()  # Bohr
+
+    ptr = bas[:, gto.PTR_EXP]
+    nprim = bas[:, gto.NPRIM_OF]
+    # np.inf for a zero-primitive padding shell -> screened out (its
+    # contraction coefficients are zero anyway).
+    bas_min_exp = np.array(
+        [env[p:p+n].min() if n > 0 else np.inf for p, n in zip(ptr, nprim)],
+        dtype=np.float64)
+    bas_coords = atom_coords[bas[:, gto.ATOM_OF]]
+
+    ecpbas = np.asarray(ecpbas)
+    ngrp = len(ecp_loc) - 1
+    ecp_min_exp = np.empty(ngrp, dtype=np.float64)
+    ecp_coords = np.empty((ngrp, 3), dtype=np.float64)
+    for g in range(ngrp):
+        rows = ecpbas[ecp_loc[g]:ecp_loc[g+1]]
+        exps = [env[r[gto.PTR_EXP]:r[gto.PTR_EXP]+r[gto.NPRIM_OF]] for r in rows]
+        exps = np.concatenate(exps) if exps else np.empty(0)
+        ecp_min_exp[g] = exps.min() if exps.size else 0.0
+        ecp_coords[g] = atom_coords[rows[0, gto.ATOM_OF]]
+    return bas_min_exp, bas_coords, ecp_min_exp, ecp_coords
+
+
+def _screen_grid(grid, screen_data, expcutoff):
+    '''Drop (ish, jsh, ksh) rows whose 3-center overlap estimate is negligible.
+
+    Mirrors check_3c_overlap() in pyscf/lib/gto/nr_ecp.c:
+        eijk = (ai*aj*|Ri-Rj|^2 + ai*ak*|C-Ri|^2 + aj*ak*|C-Rj|^2) / (ai+aj+ak)
+    keep the triple when eijk < expcutoff.
+    '''
+    if grid.shape[0] == 0:
+        return grid
+    bas_min_exp, bas_coords, ecp_min_exp, ecp_coords = screen_data
+    ish = grid[:, 0]
+    jsh = grid[:, 1]
+    ksh = grid[:, 2]
+    ai = bas_min_exp[ish]
+    aj = bas_min_exp[jsh]
+    ak = ecp_min_exp[ksh]
+    rab = bas_coords[ish] - bas_coords[jsh]
+    rca = ecp_coords[ksh] - bas_coords[ish]
+    rcb = ecp_coords[ksh] - bas_coords[jsh]
+    rrab = np.sum(rab*rab, axis=1)
+    rrca = np.sum(rca*rca, axis=1)
+    rrcb = np.sum(rcb*rcb, axis=1)
+    eijk = (ai*aj*rrab + ai*ak*rrca + aj*ak*rrcb) / (ai + aj + ak)
+    return grid[eijk < expcutoff]
+
+
 def sort_ecp_basis(_ecpbas, cart=True, log=None):
     '''
     # Sort ECP basis based on angular momentum
@@ -72,12 +154,13 @@ def sort_ecp_basis(_ecpbas, cart=True, log=None):
 
     return _ecpbas, uniq_l, l_counts, ecp_loc
 
-def make_tasks(l_ctr_offsets, lecp_ctr_offsets):
+def make_tasks(l_ctr_offsets, lecp_ctr_offsets, screen_data=None,
+               expcutoff=EXPCUTOFF):
     tasks = {}
     n_groups = len(l_ctr_offsets) - 1
     n_ecp_groups = len(lecp_ctr_offsets) - 1
 
-    # TODO: Add screening here
+    do_screen = screen_data is not None and SCREEN_ECP
     for i in range(n_groups):
         for j in range(i,n_groups):
             for k in range(n_ecp_groups):
@@ -90,15 +173,19 @@ def make_tasks(l_ctr_offsets, lecp_ctr_offsets):
                     np.arange(ksh0,ksh1))
                 grid = np.stack(grid, axis=-1).reshape(-1, 3)
                 idx = grid[:,0] <= grid[:,1]
-                tasks[i,j,k] = grid[idx]
+                grid = grid[idx]
+                if do_screen:
+                    grid = _screen_grid(grid, screen_data, expcutoff)
+                tasks[i,j,k] = grid
     return tasks
 
-def make_full_tasks(l_ctr_offsets, lecp_ctr_offsets):
+def make_full_tasks(l_ctr_offsets, lecp_ctr_offsets, screen_data=None,
+                    expcutoff=EXPCUTOFF):
     tasks = {}
     n_groups = len(l_ctr_offsets) - 1
     n_ecp_groups = len(lecp_ctr_offsets) - 1
 
-    # TODO: Add screening
+    do_screen = screen_data is not None and SCREEN_ECP
     for i in range(n_groups):
         for j in range(n_groups):
             for k in range(n_ecp_groups):
@@ -110,6 +197,8 @@ def make_full_tasks(l_ctr_offsets, lecp_ctr_offsets):
                     np.arange(jsh0,jsh1),
                     np.arange(ksh0,ksh1))
                 grid = np.stack(grid, axis=-1).reshape(-1, 3)
+                if do_screen:
+                    grid = _screen_grid(grid, screen_data, expcutoff)
                 tasks[i,j,k] = grid
     return tasks
 
@@ -148,7 +237,9 @@ def get_ecp(mol):
     l_ctr_offsets = np.append(0, np.cumsum(l_ctr_counts))
     lecp_offsets = np.append(0, np.cumsum(lecp_counts))
 
-    tasks_all = make_tasks(l_ctr_offsets, lecp_offsets)
+    screen_data = _build_screen_data(_sorted_mol, _ecpbas, ecp_loc)
+    tasks_all = make_tasks(l_ctr_offsets, lecp_offsets, screen_data,
+                           _ecp_expcutoff(mol))
 
     atm = cp.asarray(_sorted_mol._atm, dtype=np.int32)
     bas = cp.asarray(_sorted_mol._bas, dtype=np.int32)
@@ -211,7 +302,9 @@ def get_ecp_ip(mol, ip_type='ip', ecp_atoms=None):
     l_ctr_offsets = np.append(0, np.cumsum(l_ctr_counts))
     lecp_offsets = np.append(0, np.cumsum(lecp_counts))
 
-    tasks_all = make_full_tasks(l_ctr_offsets, lecp_offsets)
+    screen_data = _build_screen_data(_sorted_mol, ecpbas, ecp_loc)
+    tasks_all = make_full_tasks(l_ctr_offsets, lecp_offsets, screen_data,
+                                _ecp_expcutoff(mol))
 
     atm = cp.asarray(_sorted_mol._atm, dtype=np.int32)
     bas = cp.asarray(_sorted_mol._bas, dtype=np.int32)
@@ -284,7 +377,9 @@ def get_ecp_ipip(mol, ip_type='ipipv', ecp_atoms=None):
     l_ctr_offsets = np.append(0, np.cumsum(l_ctr_counts))
     lecp_offsets = np.append(0, np.cumsum(lecp_counts))
 
-    tasks_all = make_full_tasks(l_ctr_offsets, lecp_offsets)
+    screen_data = _build_screen_data(_sorted_mol, ecpbas, ecp_loc)
+    tasks_all = make_full_tasks(l_ctr_offsets, lecp_offsets, screen_data,
+                                _ecp_expcutoff(mol))
 
     atm = cp.asarray(_sorted_mol._atm, dtype=np.int32)
     bas = cp.asarray(_sorted_mol._bas, dtype=np.int32)
