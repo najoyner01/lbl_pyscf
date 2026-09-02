@@ -38,19 +38,67 @@ ls $CONDA_PREFIX/targets/x86_64-linux/include/vector_types.h
 `cuda-toolkit=12.4` only needs to match `cupy-cuda12x`'s CUDA **major** version
 (12); it does not need to match the system driver.
 
-## Environment (conda activate hook)
+## Environment (conda activate / deactivate hooks)
+
+conda sources every file in `$CONDA_PREFIX/etc/conda/activate.d/` on
+`conda activate` and every file in `.../deactivate.d/` on `conda deactivate`.
+Put the gpu4pyscf environment in an `activate.d` script, and a matching
+`deactivate.d` script that restores the prior values so the settings don't leak
+into other environments.
+
+What each variable is for:
+
+| Variable | Why |
+|----------|-----|
+| `CUDA_HOME` | points cmake / build tooling at the conda toolkit |
+| `CUDA_PATH` | cupy's NVRTC does `-I $CUDA_PATH/include`; must be the `targets/x86_64-linux` dir (see above) |
+| `LD_LIBRARY_PATH` | so `libcutensor` / gpu4pyscf's `.so` files find `libcublasLt` etc. in the conda `targets` + main `lib` dirs |
+| `PYTHONPATH` | import `gpu4pyscf` from the source checkout (no `pip install -e`) |
+| `CUPY_ACCELERATORS` | enable the cuB / cuTENSOR contraction backends |
+
+Edit `REPO` below to your checkout path, then:
 
 ```sh
-mkdir -p $CONDA_PREFIX/etc/conda/activate.d
-cat > $CONDA_PREFIX/etc/conda/activate.d/gpu4pyscf-env.sh <<'EOF'
-export CUDA_HOME=$CONDA_PREFIX
-export CUDA_PATH=$CONDA_PREFIX/targets/x86_64-linux
-export LD_LIBRARY_PATH=$CONDA_PREFIX/targets/x86_64-linux/lib:$CONDA_PREFIX/lib:$LD_LIBRARY_PATH
-export PYTHONPATH=<repo>:$PYTHONPATH
-export CUPY_ACCELERATORS=cub,cutensor
+mkdir -p "$CONDA_PREFIX/etc/conda/activate.d" "$CONDA_PREFIX/etc/conda/deactivate.d"
+
+cat > "$CONDA_PREFIX/etc/conda/activate.d/gpu4pyscf-env.sh" <<'EOF'
+#!/bin/sh
+REPO=/pscratch/sd/n/namehta4/Quantum/lbl_pyscf
+
+# stash prior values so deactivate can restore them
+export _GPU4PYSCF_OLD_LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-}"
+export _GPU4PYSCF_OLD_PYTHONPATH="${PYTHONPATH:-}"
+
+export CUDA_HOME="$CONDA_PREFIX"
+export CUDA_PATH="$CONDA_PREFIX/targets/x86_64-linux"
+export LD_LIBRARY_PATH="$CONDA_PREFIX/targets/x86_64-linux/lib:$CONDA_PREFIX/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+export CUPY_ACCELERATORS="cub,cutensor"
 EOF
-conda deactivate && conda activate gpu4pyscf
+
+cat > "$CONDA_PREFIX/etc/conda/deactivate.d/gpu4pyscf-env.sh" <<'EOF'
+#!/bin/sh
+export LD_LIBRARY_PATH="$_GPU4PYSCF_OLD_LD_LIBRARY_PATH"
+export PYTHONPATH="$_GPU4PYSCF_OLD_PYTHONPATH"
+[ -z "$LD_LIBRARY_PATH" ] && unset LD_LIBRARY_PATH
+[ -z "$PYTHONPATH" ] && unset PYTHONPATH
+unset _GPU4PYSCF_OLD_LD_LIBRARY_PATH _GPU4PYSCF_OLD_PYTHONPATH
+unset CUDA_HOME CUDA_PATH CUPY_ACCELERATORS
+EOF
 ```
+
+The scripts are `source`d, not executed — no `chmod` needed. They take effect on
+the next activation:
+
+```sh
+conda deactivate && conda activate gpu4pyscf
+echo "$CUDA_PATH"          # .../targets/x86_64-linux
+echo "$LD_LIBRARY_PATH"    # starts with the two conda dirs, no leading ':'
+python -c "import sys; print('REPO on path:', any('lbl_pyscf' in p for p in sys.path))"
+```
+
+In a batch job or fresh shell, `module load conda && conda activate gpu4pyscf` is
+enough — the hooks run automatically, nothing extra to `source`.
 
 ## Build the CUDA extensions (login node — no GPU needed)
 
