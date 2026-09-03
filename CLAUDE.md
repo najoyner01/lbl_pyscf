@@ -133,7 +133,7 @@ as `libgecp`):
 | Gap | Where | Notes |
 |-----|-------|-------|
 | **Spin-orbit ECP (SO-ECP)** | CPU: `pyscf/gto/ecp.py:so_by_shell`, `ECPso_spinor` | GPU code explicitly drops SO terms (`sort_ecp_basis` filters `SO_TYPE_OF != 0`). Needed for X2C/SOC, spinor GHF. New kernel `ecp_so.cu` + spinor assembly. |
-| **Screening** | `gto/ecp.py:make_tasks` — `# TODO: Add screening` | All (shell-pair × ECP-atom) triples enumerated. Add Schwarz + distance/exponent screening; big win for large systems. |
+| ~~**Screening**~~ | `gto/ecp.py` | DONE on branch `ecp-screening` (A100-validated, screened==unscreened to 1e-13). Two-level `check_3c_overlap`-style screen; toggle `ecp.SCREEN_ECP`. Benchmark (`benchmarks/gto/ecp_screening.md`): 14x/55x/182x on Cu-chain N=20/40/80. Pending: merge. |
 | **ECP-atom slicing in grad/hess** | `grad/rhf.py:344`, `gto/ecp.py` | `# TODO: slice ecp_atoms`; currently over-computes. |
 | **PBC ECP** | `pyscf/pbc/gto/ecp.py`, `pyscf/lib/pbc/nr_ecp.c` | No GPU path. Lower priority. |
 | **Validation breadth** | — | Sweep basis L up to g, all `crenbl`/`def2`/`ccECP` sets, f-in-core; compare to PySCF to 1e-10; benchmark vs CPU across system sizes. |
