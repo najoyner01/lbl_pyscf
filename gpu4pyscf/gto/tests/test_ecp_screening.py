@@ -151,6 +151,39 @@ class UnitScreenGrid(unittest.TestCase):
         out = ecp._screen_grid(np.zeros((0, 3), dtype=int), screen_data, 1.0)
         self.assertEqual(out.shape, (0, 3))
 
+    def test_screen_block_matches_full_grid(self):
+        '''The two-level _screen_block must select exactly the same task rows as
+        _screen_grid applied to the full meshgrid, incl. padding (inf-exponent)
+        shells and zero-exponent ECP groups.'''
+        rng = np.random.default_rng(7)
+        for _ in range(50):
+            nb = int(rng.integers(2, 8))
+            nk = int(rng.integers(1, 5))
+            scale = float(rng.uniform(0.5, 4.0))
+            bas_min_exp = rng.uniform(0.2, 5.0, nb)
+            if rng.random() < 0.2:
+                bas_min_exp[rng.integers(nb)] = np.inf
+            ecp_min_exp = rng.uniform(0.1, 3.0, nk)
+            if rng.random() < 0.2:
+                ecp_min_exp[rng.integers(nk)] = 0.0
+            screen_data = (bas_min_exp, rng.normal(scale=scale, size=(nb, 3)),
+                           ecp_min_exp, rng.normal(scale=scale, size=(nk, 3)))
+            cutoff = float(rng.uniform(2.0, 40.0))
+            ish = np.arange(nb)
+            jsh = np.arange(nb)
+            ksh = np.arange(nk)
+            for triangular in (False, True):
+                full = np.stack(np.meshgrid(ish, jsh, ksh),
+                                axis=-1).reshape(-1, 3)
+                if triangular:
+                    full = full[full[:, 0] <= full[:, 1]]
+                ref = sorted(map(tuple,
+                                 ecp._screen_grid(full, screen_data, cutoff).tolist()))
+                blk = sorted(map(tuple,
+                                 ecp._screen_block(ish, jsh, ksh, screen_data,
+                                                   cutoff, triangular).tolist()))
+                self.assertEqual(ref, blk, msg=f'triangular={triangular}')
+
 
 if __name__ == '__main__':
     print('Tests for ECP task-list screening')

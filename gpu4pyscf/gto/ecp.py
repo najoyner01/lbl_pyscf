@@ -123,7 +123,8 @@ def _screen_grid(grid, screen_data, expcutoff):
     rrab = np.sum(rab*rab, axis=1)
     rrca = np.sum(rca*rca, axis=1)
     rrcb = np.sum(rcb*rcb, axis=1)
-    eijk = (ai*aj*rrab + ai*ak*rrca + aj*ak*rrcb) / (ai + aj + ak)
+    with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+        eijk = (ai*aj*rrab + ai*ak*rrca + aj*ak*rrcb) / (ai + aj + ak)
     return grid[eijk < expcutoff]
 
 
@@ -154,53 +155,105 @@ def sort_ecp_basis(_ecpbas, cart=True, log=None):
 
     return _ecpbas, uniq_l, l_counts, ecp_loc
 
-def make_tasks(l_ctr_offsets, lecp_ctr_offsets, screen_data=None,
-               expcutoff=EXPCUTOFF):
+def _screen_block(ish_range, jsh_range, ksh_range, screen_data, expcutoff,
+                  triangular):
+    '''(ish, jsh, ksh) task rows surviving the 3-center overlap screen, built
+    without ever materializing the full ish x jsh x ksh grid.
+
+    Two levels, per ECP group k:
+      1. keep shell i (resp. j) only if the best-case bound (partner
+         exponent -> 0) is above threshold:
+             ai*ak*|C-Ri|^2  <  expcutoff * (ai + ak)
+      2. run the full check_3c_overlap estimate on the surviving (i, j) pairs.
+    When nothing screens out (small/dense systems) level 2 costs the same as the
+    old full meshgrid; when most triples are negligible the work collapses to
+    the small surviving neighborhood.
+    '''
+    bas_min_exp, bas_coords, ecp_min_exp, ecp_coords = screen_data
+    ish_range = np.asarray(ish_range)
+    jsh_range = np.asarray(jsh_range)
+    ai_all = bas_min_exp[ish_range]
+    aj_all = bas_min_exp[jsh_range]
+    ri_all = bas_coords[ish_range]
+    rj_all = bas_coords[jsh_range]
+
+    out = []
+    # inf exponents (zero-primitive padding shells) produce inf/nan below; those
+    # compare False and are dropped, which is the intended outcome.
+    with np.errstate(over='ignore', invalid='ignore', divide='ignore'):
+        for k in ksh_range:
+            ak = ecp_min_exp[k]
+            ck = ecp_coords[k]
+            rrca = np.sum((ri_all - ck)**2, axis=1)
+            rrcb = np.sum((rj_all - ck)**2, axis=1)
+            i_keep = ish_range[ai_all*ak*rrca < expcutoff * (ai_all + ak)]
+            j_keep = jsh_range[aj_all*ak*rrcb < expcutoff * (aj_all + ak)]
+            if i_keep.size == 0 or j_keep.size == 0:
+                continue
+            ii, jj = np.meshgrid(i_keep, j_keep, indexing='ij')
+            ii = ii.ravel()
+            jj = jj.ravel()
+            if triangular:
+                m = ii <= jj
+                ii = ii[m]
+                jj = jj[m]
+                if ii.size == 0:
+                    continue
+            aii = bas_min_exp[ii]
+            ajj = bas_min_exp[jj]
+            rab = bas_coords[ii] - bas_coords[jj]
+            rca = ck - bas_coords[ii]
+            rcb = ck - bas_coords[jj]
+            eijk = (aii*ajj*np.sum(rab*rab, axis=1)
+                    + aii*ak*np.sum(rca*rca, axis=1)
+                    + ajj*ak*np.sum(rcb*rcb, axis=1)) / (aii + ajj + ak)
+            m = eijk < expcutoff
+            if np.any(m):
+                kk = np.full(int(np.count_nonzero(m)), k, dtype=np.int64)
+                out.append(np.stack(
+                    [ii[m].astype(np.int64), jj[m].astype(np.int64), kk],
+                    axis=1))
+    if out:
+        return np.concatenate(out, axis=0)
+    return np.zeros((0, 3), dtype=np.int64)
+
+
+def _build_tasks(l_ctr_offsets, lecp_ctr_offsets, screen_data, expcutoff,
+                 triangular):
     tasks = {}
     n_groups = len(l_ctr_offsets) - 1
     n_ecp_groups = len(lecp_ctr_offsets) - 1
-
     do_screen = screen_data is not None and SCREEN_ECP
     for i in range(n_groups):
-        for j in range(i,n_groups):
+        j_start = i if triangular else 0
+        for j in range(j_start, n_groups):
             for k in range(n_ecp_groups):
-                ish0, ish1 = l_ctr_offsets[i], l_ctr_offsets[i+1]
-                jsh0, jsh1 = l_ctr_offsets[j], l_ctr_offsets[j+1]
-                ksh0, ksh1 = lecp_ctr_offsets[k], lecp_ctr_offsets[k+1]
-                grid = np.meshgrid(
-                    np.arange(ish0,ish1),
-                    np.arange(jsh0,jsh1),
-                    np.arange(ksh0,ksh1))
-                grid = np.stack(grid, axis=-1).reshape(-1, 3)
-                idx = grid[:,0] <= grid[:,1]
-                grid = grid[idx]
+                ish_range = np.arange(l_ctr_offsets[i], l_ctr_offsets[i+1])
+                jsh_range = np.arange(l_ctr_offsets[j], l_ctr_offsets[j+1])
+                ksh_range = np.arange(lecp_ctr_offsets[k], lecp_ctr_offsets[k+1])
                 if do_screen:
-                    grid = _screen_grid(grid, screen_data, expcutoff)
-                tasks[i,j,k] = grid
+                    grid = _screen_block(ish_range, jsh_range, ksh_range,
+                                         screen_data, expcutoff, triangular)
+                else:
+                    grid = np.stack(
+                        np.meshgrid(ish_range, jsh_range, ksh_range),
+                        axis=-1).reshape(-1, 3)
+                    if triangular:
+                        grid = grid[grid[:, 0] <= grid[:, 1]]
+                tasks[i, j, k] = grid
     return tasks
+
+
+def make_tasks(l_ctr_offsets, lecp_ctr_offsets, screen_data=None,
+               expcutoff=EXPCUTOFF):
+    return _build_tasks(l_ctr_offsets, lecp_ctr_offsets, screen_data,
+                        expcutoff, triangular=True)
+
 
 def make_full_tasks(l_ctr_offsets, lecp_ctr_offsets, screen_data=None,
                     expcutoff=EXPCUTOFF):
-    tasks = {}
-    n_groups = len(l_ctr_offsets) - 1
-    n_ecp_groups = len(lecp_ctr_offsets) - 1
-
-    do_screen = screen_data is not None and SCREEN_ECP
-    for i in range(n_groups):
-        for j in range(n_groups):
-            for k in range(n_ecp_groups):
-                ish0, ish1 = l_ctr_offsets[i], l_ctr_offsets[i+1]
-                jsh0, jsh1 = l_ctr_offsets[j], l_ctr_offsets[j+1]
-                ksh0, ksh1 = lecp_ctr_offsets[k], lecp_ctr_offsets[k+1]
-                grid = np.meshgrid(
-                    np.arange(ish0,ish1),
-                    np.arange(jsh0,jsh1),
-                    np.arange(ksh0,ksh1))
-                grid = np.stack(grid, axis=-1).reshape(-1, 3)
-                if do_screen:
-                    grid = _screen_grid(grid, screen_data, expcutoff)
-                tasks[i,j,k] = grid
-    return tasks
+    return _build_tasks(l_ctr_offsets, lecp_ctr_offsets, screen_data,
+                        expcutoff, triangular=False)
 
 def select_basis(ecpbas, ecp_atoms):
     """
