@@ -18,7 +18,7 @@ import cupy as cp
 from pyscf import gto
 from pyscf import __config__
 from gpu4pyscf.lib import logger
-from gpu4pyscf.lib.cupy_helper import load_library, contract
+from gpu4pyscf.lib.cupy_helper import load_library, contract, get_avail_mem
 from gpu4pyscf.gto.mole import group_basis
 
 libecp = load_library('libgecp')
@@ -327,75 +327,140 @@ def get_ecp(mol):
     return coeff.T @ mat1 @ coeff
 
 
-def get_ecp_ip(mol, ip_type='ip', ecp_atoms=None):
+_IP_FN = {
+    'ip':    (libecp.ECP_ip_cart,    3),
+    'ipipv': (libecp.ECP_ipipv_cart, 9),
+    'ipvip': (libecp.ECP_ipvip_cart, 9),
+}
+
+
+class _EcpDerivContext:
+    '''Batch-invariant data for the ECP-derivative kernels, built once so that
+    slicing over ECP atoms only re-does the cheap per-batch work (basis
+    selection, screening, task list, kernel launch, AO transform).
+    '''
+    def __init__(self, mol):
+        self._sorted_mol, coeff, self.uniq_l_ctr, l_ctr_counts = group_basis(mol)
+        self.l_ctr_offsets = np.append(0, np.cumsum(l_ctr_counts))
+        self.expcutoff = _ecp_expcutoff(mol)
+        self.ecpbas_src = mol._ecpbas
+        self.atm = cp.asarray(self._sorted_mol._atm, dtype=np.int32)
+        self.bas = cp.asarray(self._sorted_mol._bas, dtype=np.int32)
+        self.env = cp.asarray(self._sorted_mol._env, dtype=np.float64)
+        ao_loc = self._sorted_mol.ao_loc_nr(cart=True)
+        self.nao = int(ao_loc[-1])
+        self.ao_loc = cp.asarray(ao_loc, dtype=np.int32)
+        self.coeff = cp.asarray(coeff)
+        self.n_groups = len(self.uniq_l_ctr)
+
+    def run_batch(self, fn, comp, ecp_atoms_batch):
+        '''[len(ecp_atoms_batch), comp, nao, nao] in the AO (transformed) basis.
+        Row r corresponds to ecp_atoms_batch[r].'''
+        ecpbas = select_basis(self.ecpbas_src, list(ecp_atoms_batch))
+        ecpbas, uniq_lecp, lecp_counts, ecp_loc = sort_ecp_basis(ecpbas)
+        lecp_offsets = np.append(0, np.cumsum(lecp_counts))
+        screen_data = _build_screen_data(self._sorted_mol, ecpbas, ecp_loc)
+        tasks_all = make_full_tasks(self.l_ctr_offsets, lecp_offsets,
+                                    screen_data, self.expcutoff)
+
+        ecpbas_gpu = cp.asarray(ecpbas, dtype=np.int32)
+        ecploc_gpu = cp.asarray(ecp_loc, dtype=np.int32)
+        n_ecp_groups = len(uniq_lecp)
+        nbatch = len(ecp_atoms_batch)
+        mat1 = cp.zeros([nbatch, comp, self.nao, self.nao])
+        for i in range(self.n_groups):
+            for j in range(self.n_groups):
+                for k in range(n_ecp_groups):
+                    task = tasks_all[i, j, k]
+                    if len(task) == 0:
+                        continue
+                    task = cp.asarray(task, dtype=np.int32, order='F')
+                    err = fn(
+                        mat1.data.ptr, self.ao_loc.data.ptr, self.nao,
+                        task.data.ptr, len(task),
+                        ecpbas_gpu.data.ptr, ecploc_gpu.data.ptr,
+                        self.atm.data.ptr, self.bas.data.ptr, self.env.data.ptr,
+                        int(self.uniq_l_ctr[i, 0]), int(self.uniq_l_ctr[j, 0]),
+                        int(uniq_lecp[k]))
+                    if err != 0:
+                        raise RuntimeError('ECP CUDA kernel failed.')
+        mat1 = contract('axij,jq->axiq', mat1, self.coeff)
+        mat1 = contract('axiq,ip->axpq', mat1, self.coeff)
+        return mat1
+
+
+def _default_ecp_atoms(mol):
+    return sorted(set(int(a) for a in mol._ecpbas[:, gto.ATOM_OF]))
+
+
+def _ecp_atom_batch_size(comp, nao, n_ecp_atm, batch_size=None):
+    '''How many ECP atoms to process at once so the transient
+    [batch, comp, nao, nao] tensor (plus AO-transform scratch) stays well
+    within free GPU memory.'''
+    if batch_size is not None:
+        return max(1, min(int(batch_size), n_ecp_atm))
+    # mat1 + the two contract() temporaries ~ 3 buffers of this size
+    per_atom = comp * nao * nao * 8 * 3
+    avail = get_avail_mem()
+    b = int(avail * 0.2 / max(per_atom, 1))
+    return max(1, min(b, n_ecp_atm))
+
+
+def loop_ecp_ip(mol, ip_type='ip', ecp_atoms=None, batch_size=None):
+    '''Generator over ECP atoms in memory-bounded chunks.
+
+    Yields ``(atom_ids, mat)`` where ``atom_ids`` is a list of atom indices and
+    ``mat`` is a CuPy array ``[len(atom_ids), comp, nao, nao]`` (comp = 3 for
+    ``ip``, 9 for ``ipipv``/``ipvip``); ``mat[r]`` is the derivative w.r.t.
+    ``atom_ids[r]``.  Avoids ever allocating the full
+    ``[n_ecp_atoms, comp, nao, nao]`` tensor.
+    '''
+    assert len(mol._ecpbas) > 0
+    if ip_type not in _IP_FN:
+        raise ValueError(f'Invalid IP type: {ip_type}')
+    fn, comp = _IP_FN[ip_type]
+
+    if ecp_atoms is None:
+        ecp_atoms = _default_ecp_atoms(mol)
+    else:
+        ecp_atoms = [int(a) for a in ecp_atoms]
+    if len(ecp_atoms) == 0:
+        return
+
+    ctx = _EcpDerivContext(mol)
+    bs = _ecp_atom_batch_size(comp, ctx.nao, len(ecp_atoms), batch_size)
+    for p0 in range(0, len(ecp_atoms), bs):
+        batch = ecp_atoms[p0:p0+bs]
+        yield batch, ctx.run_batch(fn, comp, batch)
+
+
+def loop_ecp_ipip(mol, ip_type='ipipv', ecp_atoms=None, batch_size=None):
+    '''Same as :func:`loop_ecp_ip` for the second derivatives
+    (``ipipv``/``ipvip``, comp = 9).'''
+    yield from loop_ecp_ip(mol, ip_type=ip_type, ecp_atoms=ecp_atoms,
+                           batch_size=batch_size)
+
+
+def get_ecp_ip(mol, ip_type='ip', ecp_atoms=None, batch_size=None):
     """
     First derivative of ECP integrals
 
     Returns:
         CuPy array: [n_ecp_atoms, 3, nao, nao],
-            reindex the first dimension acoording to ecp_atoms
+            first dimension reindexed according to sorted(ecp_atoms)
+
+    Note: materializes the full tensor.  For large systems prefer
+    :func:`loop_ecp_ip` or :func:`get_ecp_ip_sum`.
     """
-    assert len(mol._ecpbas) > 0
+    mats = [mat for _batch, mat in
+            loop_ecp_ip(mol, ip_type, ecp_atoms, batch_size)]
+    if not mats:
+        _, comp = _IP_FN[ip_type]
+        return cp.zeros([0, comp, mol.nao, mol.nao])
+    return cp.concatenate(mats, axis=0)
 
-    if ecp_atoms is None:
-        ecp_atoms = sorted(set(mol._ecpbas[:,gto.ATOM_OF]))
 
-    if ip_type == 'ip':
-        fn = libecp.ECP_ip_cart
-        comp = 3
-    else:
-        raise ValueError('Invalid IP type')
-
-    _sorted_mol, coeff, uniq_l_ctr, l_ctr_counts = group_basis(mol)
-    _ecpbas = mol._ecpbas.copy()
-
-    ecpbas = select_basis(_ecpbas, ecp_atoms)
-    ecpbas, uniq_lecp, lecp_counts, ecp_loc= sort_ecp_basis(ecpbas)
-
-    l_ctr_offsets = np.append(0, np.cumsum(l_ctr_counts))
-    lecp_offsets = np.append(0, np.cumsum(lecp_counts))
-
-    screen_data = _build_screen_data(_sorted_mol, ecpbas, ecp_loc)
-    tasks_all = make_full_tasks(l_ctr_offsets, lecp_offsets, screen_data,
-                                _ecp_expcutoff(mol))
-
-    atm = cp.asarray(_sorted_mol._atm, dtype=np.int32)
-    bas = cp.asarray(_sorted_mol._bas, dtype=np.int32)
-    env = cp.asarray(_sorted_mol._env, dtype=np.float64)
-
-    ecpbas = cp.asarray(ecpbas, dtype=np.int32)
-    ecploc = cp.asarray(ecp_loc, dtype=np.int32)
-    n_groups = len(uniq_l_ctr)
-    n_ecp_groups = len(uniq_lecp)
-    ao_loc = _sorted_mol.ao_loc_nr(cart=True)
-    nao = ao_loc[-1]
-    ao_loc = cp.asarray(ao_loc, dtype=np.int32)
-    n_ecp_atm = len(ecp_atoms)
-
-    mat1 = cp.zeros([n_ecp_atm, comp, nao, nao])
-    for i in range(n_groups):
-        for j in range(n_groups):
-            for k in range(n_ecp_groups):
-                tasks = cp.asarray(tasks_all[i,j,k], dtype=np.int32, order='F')
-                ntasks = len(tasks)
-                li = uniq_l_ctr[i,0]
-                lj = uniq_l_ctr[j,0]
-                lk = uniq_lecp[k]
-                err = fn(
-                    mat1.data.ptr, ao_loc.data.ptr, nao,
-                    tasks.data.ptr, ntasks,
-                    ecpbas.data.ptr, ecploc.data.ptr,
-                    atm.data.ptr, bas.data.ptr, env.data.ptr,
-                    li, lj, lk)
-                if err != 0:
-                    raise RuntimeError('ECP CUDA kernel failed.')
-
-    coeff = cp.asarray(coeff)
-    mat1 = contract('axij,jq->axiq', mat1, coeff)
-    mat1 = contract('axiq,ip->axpq', mat1, coeff)
-    return mat1
-
-def get_ecp_ipip(mol, ip_type='ipipv', ecp_atoms=None):
+def get_ecp_ipip(mol, ip_type='ipipv', ecp_atoms=None, batch_size=None):
     """
     Second derivatives of ECP integrals
     Args:
@@ -405,67 +470,29 @@ def get_ecp_ipip(mol, ip_type='ipipv', ecp_atoms=None):
 
     Returns:
         CuPy array: [n_ecp_atoms, 9, nao, nao],
-            reindex the first dimension acoording to ecp_atoms
+            first dimension reindexed according to sorted(ecp_atoms)
+
+    Note: materializes the full tensor.  For large systems prefer
+    :func:`loop_ecp_ipip` or :func:`get_ecp_ipip_sum`.
     """
-    assert len(mol._ecpbas) > 0
+    return get_ecp_ip(mol, ip_type, ecp_atoms, batch_size)
 
-    if ecp_atoms is None:
-        ecp_atoms = set(mol._ecpbas[:,gto.ATOM_OF])
 
-    if ip_type == 'ipipv':
-        fn = libecp.ECP_ipipv_cart
-        comp = 9
-    elif ip_type == 'ipvip':
-        fn = libecp.ECP_ipvip_cart
-        comp = 9
-    else:
-        raise ValueError('Invalid IP type')
+def get_ecp_ip_sum(mol, ip_type='ip', ecp_atoms=None, batch_size=None):
+    '''sum over ECP atoms of the derivative integrals -> [comp, nao, nao].
 
-    _sorted_mol, coeff, uniq_l_ctr, l_ctr_counts = group_basis(mol)
+    Equivalent to ``get_ecp_ip(mol, ...).sum(axis=0)`` but memory-bounded.
+    '''
+    out = None
+    for _batch, mat in loop_ecp_ip(mol, ip_type, ecp_atoms, batch_size):
+        s = mat.sum(axis=0)
+        out = s if out is None else out + s
+    if out is None:
+        _, comp = _IP_FN[ip_type]
+        return cp.zeros([comp, mol.nao, mol.nao])
+    return out
 
-    _ecpbas = _sorted_mol._ecpbas
-    ecpbas = select_basis(_ecpbas, ecp_atoms)
-    ecpbas, uniq_lecp, lecp_counts, ecp_loc= sort_ecp_basis(ecpbas)
 
-    l_ctr_offsets = np.append(0, np.cumsum(l_ctr_counts))
-    lecp_offsets = np.append(0, np.cumsum(lecp_counts))
-
-    screen_data = _build_screen_data(_sorted_mol, ecpbas, ecp_loc)
-    tasks_all = make_full_tasks(l_ctr_offsets, lecp_offsets, screen_data,
-                                _ecp_expcutoff(mol))
-
-    atm = cp.asarray(_sorted_mol._atm, dtype=np.int32)
-    bas = cp.asarray(_sorted_mol._bas, dtype=np.int32)
-    env = cp.asarray(_sorted_mol._env, dtype=np.float64)
-
-    ecpbas = cp.asarray(ecpbas, dtype=np.int32)
-    ecploc = cp.asarray(ecp_loc, dtype=np.int32)
-    n_groups = len(uniq_l_ctr)
-    n_ecp_groups = len(uniq_lecp)
-    ao_loc = _sorted_mol.ao_loc_nr(cart=True)
-    nao = ao_loc[-1]
-    ao_loc = cp.asarray(ao_loc, dtype=np.int32)
-    n_ecp_atm = len(ecp_atoms)
-
-    mat1 = cp.zeros([n_ecp_atm, comp, nao, nao])
-    for i in range(n_groups):
-        for j in range(n_groups):
-            for k in range(n_ecp_groups):
-                tasks = cp.asarray(tasks_all[i,j,k], dtype=np.int32, order='F')
-                ntasks = len(tasks)
-                li = uniq_l_ctr[i,0]
-                lj = uniq_l_ctr[j,0]
-                lk = uniq_lecp[k]
-                err = fn(
-                    mat1.data.ptr, ao_loc.data.ptr, nao,
-                    tasks.data.ptr, ntasks,
-                    ecpbas.data.ptr, ecploc.data.ptr,
-                    atm.data.ptr, bas.data.ptr, env.data.ptr,
-                    li, lj, lk)
-                if err != 0:
-                    raise RuntimeError('ECP CUDA kernel failed.')
-
-    coeff = cp.asarray(coeff)
-    mat1 = contract('axij,jq->axiq', mat1, coeff)
-    mat1 = contract('axiq,ip->axpq', mat1, coeff)
-    return mat1
+def get_ecp_ipip_sum(mol, ip_type='ipipv', ecp_atoms=None, batch_size=None):
+    '''sum over ECP atoms of the 2nd-derivative integrals -> [9, nao, nao].'''
+    return get_ecp_ip_sum(mol, ip_type, ecp_atoms, batch_size)

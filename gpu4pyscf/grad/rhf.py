@@ -21,7 +21,7 @@ import cupy
 from pyscf import lib, gto
 from pyscf.grad import rhf as rhf_grad_cpu
 from gpu4pyscf.grad.dispersion import get_dispersion
-from gpu4pyscf.gto.ecp import get_ecp_ip
+from gpu4pyscf.gto.ecp import loop_ecp_ip, get_ecp_ip_sum
 from gpu4pyscf.lib import utils
 from gpu4pyscf.lib.cupy_helper import (
     tag_array, contract, condense, transpose_sum, get_avail_mem, ndarray)
@@ -195,9 +195,10 @@ def get_dh1e_ecp(mol, dm):
     if not with_ecp:
         raise RuntimeWarning("ECP not found")
 
-    h1_ecp = get_ecp_ip(mol)
-    dh1e_ecp = contract('nxij,ij->nx', h1_ecp, dm)
-    return 2.0 * dh1e_ecp
+    dm = cupy.asarray(dm)
+    parts = [contract('nxij,ij->nx', h1, dm)
+             for _batch, h1 in loop_ecp_ip(mol)]
+    return 2.0 * cupy.concatenate(parts, axis=0)
 
 def get_hcore(mf, mol, exclude_ecp=False):
     '''
@@ -214,7 +215,7 @@ def get_hcore(mf, mol, exclude_ecp=False):
     h = int1e_ipkin(sorted_mol)
     h += int1e_ipnuc(sorted_mol)
     if not exclude_ecp and len(mol._ecpbas) > 0:
-        h += get_ecp_ip(mol).sum(axis=0)
+        h += get_ecp_ip_sum(mol)
     return -h
 
 def int1e_ipnuc(mol):
@@ -341,11 +342,13 @@ def _hcore_energy(mf_grad, dm0, dme0):
     # Calculate ECP contributions in (i | \nabla hcore | j) and
     # (\nabla i | hcore | j) simultaneously
     if len(mol._ecpbas) > 0:
-        # TODO: slice ecp_atoms
         ecp_atoms = np.unique(mol._ecpbas[:,gto.ATOM_OF])
-        h1_ecp = get_ecp_ip(mol, ecp_atoms=ecp_atoms)
-        dh -= contract_h1e_dm(mol, h1_ecp.sum(axis=0), dm0, hermi=1)
-        dh[ecp_atoms] += 2.0 * contract('nxij,ij->nx', h1_ecp, dm0).get()
+        h1_ecp_sum = None
+        for batch, h1 in loop_ecp_ip(mol, ecp_atoms=ecp_atoms):
+            s = h1.sum(axis=0)
+            h1_ecp_sum = s if h1_ecp_sum is None else h1_ecp_sum + s
+            dh[np.asarray(batch)] += 2.0 * contract('nxij,ij->nx', h1, dm0).get()
+        dh -= contract_h1e_dm(mol, h1_ecp_sum, dm0, hermi=1)
 
     s1 = cupy.asarray(mf_grad.get_ovlp(mol))
     dh -= contract_h1e_dm(mol, s1, dme0, hermi=1)
@@ -409,10 +412,10 @@ def get_grad_hcore(mf_grad, mo_coeff=None, mo_occ=None):
     # Contributions due to ECP
     if len(mol._ecpbas) > 0:
         ecp_atoms = np.unique(mol._ecpbas[:,gto.ATOM_OF])
-        h1_ecp = get_ecp_ip(mol, ecp_atoms=ecp_atoms)
-        h1_ecp = h1_ecp + h1_ecp.transpose([0,1,3,2])
-        h1mo = contract('nxij,jo->nxio', h1_ecp, orbo)
-        dh1e[ecp_atoms] += contract('nxio,ip->nxpo', h1mo, mo_coeff)
+        for batch, h1_ecp in loop_ecp_ip(mol, ecp_atoms=ecp_atoms):
+            h1_ecp = h1_ecp + h1_ecp.transpose([0,1,3,2])
+            h1mo = contract('nxij,jo->nxio', h1_ecp, orbo)
+            dh1e[np.asarray(batch)] += contract('nxio,ip->nxpo', h1mo, mo_coeff)
 
     if mol._pseudo:
         raise NotImplementedError("Pseudopotential gradient not supported for molecular system yet")

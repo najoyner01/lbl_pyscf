@@ -4683,7 +4683,8 @@ class CuESTGradientWrapper(lib.StreamObject):
         assert dm.shape == (mol.nao, mol.nao)
 
         if not self.base.turn_on_cuest_hcore:
-            from gpu4pyscf.grad.rhf import int3c2e, get_ecp_ip, contract, contract_h1e_dm, ensure_numpy
+            from gpu4pyscf.grad.rhf import int3c2e, contract, contract_h1e_dm, ensure_numpy
+            from gpu4pyscf.gto.ecp import loop_ecp_ip
 
             # (\nabla i | hcore | j) - (\nabla i | j)
             h1 = cp.asarray(super().get_hcore(mol, exclude_ecp=True))
@@ -4693,11 +4694,10 @@ class CuESTGradientWrapper(lib.StreamObject):
             # Calculate ECP contributions in (i | \nabla hcore | j) and
             # (\nabla i | hcore | j) simultaneously
             if len(mol._ecpbas) > 0:
-                # TODO: slice ecp_atoms
                 ecp_atoms = sorted(set(mol._ecpbas[:,gto.ATOM_OF]))
-                h1_ecp = get_ecp_ip(mol, ecp_atoms=ecp_atoms)
-                h1 -= h1_ecp.sum(axis=0)
-                dh1e[ecp_atoms] += 2.0 * contract('nxij,ij->nx', h1_ecp, dm)
+                for batch, h1_ecp in loop_ecp_ip(mol, ecp_atoms=ecp_atoms):
+                    h1 -= h1_ecp.sum(axis=0)
+                    dh1e[np.asarray(batch)] += 2.0 * contract('nxij,ij->nx', h1_ecp, dm)
 
             dh = contract_h1e_dm(mol, h1, dm, hermi=1)
             dh += ensure_numpy(dh1e)

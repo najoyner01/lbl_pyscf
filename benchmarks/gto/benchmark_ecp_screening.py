@@ -33,7 +33,7 @@ import cupy as cp
 from pyscf import gto
 
 from gpu4pyscf.gto import ecp as gecp
-from gpu4pyscf.gto.ecp import get_ecp, get_ecp_ip
+from gpu4pyscf.gto.ecp import get_ecp, get_ecp_ip_sum
 from gpu4pyscf.gto.mole import group_basis
 
 
@@ -126,24 +126,27 @@ def run(ns, element, spacing, basis, ecp, do_ip):
                   f'{sf:>9} {ss:>9} {speedup:>8.2f} {maxdiff:>9.1e}')
 
             if do_ip:
-                n_ecp_atm = len(set(mol._ecpbas[:, gto.ATOM_OF]))
-                need = n_ecp_atm * 3 * nao * nao * 8
-                free = cp.cuda.runtime.memGetInfo()[0]
-                if need > 0.6 * free:
-                    print(f'     get_ecp_ip: skipped, needs ~{need/2**30:.1f} '
-                          f'GiB for the [n_ecp_atm,3,nao,nao] buffer '
-                          f'(free {free/2**30:.1f} GiB) -- ECP-atom slicing '
-                          f'is the fix')
-                else:
+                # get_ecp_ip_sum is the memory-bounded reduction a real
+                # gradient uses (grad/rhf.get_hcore); it batches over ECP atoms
+                # so it runs at any N, unlike the dense get_ecp_ip tensor.
+                gecp.SCREEN_ECP = False
+                tip_full = gpu_time(get_ecp_ip_sum, mol)
+                gecp.SCREEN_ECP = True
+                tip_scr = gpu_time(get_ecp_ip_sum, mol)
+                if tip_full and tip_scr:
                     gecp.SCREEN_ECP = False
-                    tip_full = gpu_time(get_ecp_ip, mol)
+                    a = get_ecp_ip_sum(mol)
                     gecp.SCREEN_ECP = True
-                    tip_scr = gpu_time(get_ecp_ip, mol)
-                    if tip_full and tip_scr:
-                        print(f'     get_ecp_ip {tip_full:9.4f} {tip_scr:9.4f} '
-                              f'{tip_full / max(tip_scr, 1e-9):8.2f}')
-                    else:
-                        print('     get_ecp_ip: OOM')
+                    b = get_ecp_ip_sum(mol)
+                    dip = float(cp.abs(a - b).max())
+                    del a, b
+                    free_gpu()
+                    print(f'     get_ecp_ip_sum {tip_full:9.4f} {tip_scr:9.4f} '
+                          f'{tip_full / max(tip_scr, 1e-9):8.2f}  '
+                          f'maxdiff {dip:.1e}')
+                    assert dip < 1e-9
+                else:
+                    print('     get_ecp_ip_sum: OOM')
             del mol
             free_gpu()
     finally:

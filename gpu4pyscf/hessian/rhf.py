@@ -25,7 +25,7 @@ import numpy as np
 from pyscf.hessian import rhf as rhf_hess_cpu
 from pyscf import lib, gto
 from pyscf.gto import ATOM_OF
-from gpu4pyscf.gto.ecp import get_ecp_ip, get_ecp_ipip
+from gpu4pyscf.gto.ecp import loop_ecp_ipip, get_ecp_ipip_sum
 from gpu4pyscf.scf import cphf, j_engine
 from gpu4pyscf.lib.cupy_helper import (
     contract, tag_array, transpose_sum, get_avail_mem, condense, krylov)
@@ -158,8 +158,8 @@ def _hcore_energy(hessobj, dm0, dme0):
     h1aa = cp.asarray(mol.intor('int1e_ipipkin', comp=9))
     h1ab = cp.asarray(mol.intor('int1e_ipkinip', comp=9))
     if with_ecp:
-        h1aa += get_ecp_ipip(mol, 'ipipv').sum(axis=0)
-        h1ab += get_ecp_ipip(mol, 'ipvip').sum(axis=0)
+        h1aa += get_ecp_ipip_sum(mol, 'ipipv')
+        h1ab += get_ecp_ipip_sum(mol, 'ipvip')
     nao = h1ab.shape[1]
     h1aa = contract('xypq,qp->pxy', h1aa.reshape(3, 3, nao, nao), dm0)
     h1ab = contract('xypq,qp->pqxy', h1ab.reshape(3, 3, nao, nao), dm0)
@@ -764,30 +764,32 @@ def hess_nuc_elec_ecp(mol, dm):
     nao = mol.nao
     natm = mol.natm
     aoslices = mol.aoslice_by_atom()
-    ecp_atoms = sorted(set(mol._ecpbas[:,ATOM_OF]))
-    n_ecp_atm = len(ecp_atoms)
+    ecp_atoms = sorted(set(int(a) for a in mol._ecpbas[:,ATOM_OF]))
     de_ecp = cupy.zeros([3,3,natm,natm])
-    rinv2aa = -get_ecp_ipip(mol, ip_type='ipipv').reshape(n_ecp_atm,3,3,nao,nao)
-    for idx, atm_id in enumerate(ecp_atoms):
-        de = contract('xypq,pq->xyp', rinv2aa[idx], dm)
-        de = cupy.asarray([cupy.sum(de[:,:,p0:p1], axis=2) for p0,p1 in aoslices[:,2:]])
-        de_ecp[:,:,atm_id] += de.transpose([1,2,0])
-        de_ecp[:,:,:,atm_id] += de.transpose([2,1,0])
 
-        # 2nd derivative on ECP basis
-        de = contract('xypq,pq->xy', rinv2aa[idx], dm)
-        de_ecp[:,:,atm_id,atm_id] -= de
+    for batch, mat in loop_ecp_ipip(mol, ip_type='ipipv', ecp_atoms=ecp_atoms):
+        rinv2aa = -mat.reshape(len(batch),3,3,nao,nao)
+        for bidx, atm_id in enumerate(batch):
+            de = contract('xypq,pq->xyp', rinv2aa[bidx], dm)
+            de = cupy.asarray([cupy.sum(de[:,:,p0:p1], axis=2) for p0,p1 in aoslices[:,2:]])
+            de_ecp[:,:,atm_id] += de.transpose([1,2,0])
+            de_ecp[:,:,:,atm_id] += de.transpose([2,1,0])
 
-    rinv2ab = -get_ecp_ipip(mol, ip_type='ipvip').reshape(n_ecp_atm,3,3,nao,nao)
-    for idx, atm_id in enumerate(ecp_atoms):
-        de = contract('xypq,pq->xyp', rinv2ab[idx], dm).transpose(1,0,2)
-        de = cupy.asarray([cupy.sum(de[:,:,p0:p1], axis=2) for p0,p1 in aoslices[:,2:]])
-        de_ecp[:,:,atm_id] += de.transpose([1,2,0])
-        de_ecp[:,:,:,atm_id] += de.transpose([2,1,0])
+            # 2nd derivative on ECP basis
+            de = contract('xypq,pq->xy', rinv2aa[bidx], dm)
+            de_ecp[:,:,atm_id,atm_id] -= de
 
-        # 2nd derivative on ECP basis
-        de = contract('xypq,pq->xy', rinv2ab[idx], dm)
-        de_ecp[:,:,atm_id,atm_id] -= de
+    for batch, mat in loop_ecp_ipip(mol, ip_type='ipvip', ecp_atoms=ecp_atoms):
+        rinv2ab = -mat.reshape(len(batch),3,3,nao,nao)
+        for bidx, atm_id in enumerate(batch):
+            de = contract('xypq,pq->xyp', rinv2ab[bidx], dm).transpose(1,0,2)
+            de = cupy.asarray([cupy.sum(de[:,:,p0:p1], axis=2) for p0,p1 in aoslices[:,2:]])
+            de_ecp[:,:,atm_id] += de.transpose([1,2,0])
+            de_ecp[:,:,:,atm_id] += de.transpose([2,1,0])
+
+            # 2nd derivative on ECP basis
+            de = contract('xypq,pq->xy', rinv2ab[bidx], dm)
+            de_ecp[:,:,atm_id,atm_id] -= de
 
     return de_ecp
 
