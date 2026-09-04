@@ -128,15 +128,15 @@ as `libgecp`):
 - Angular-momentum-templated kernels with a general fallback; cart→sph by
   transform; Bessel + Gauss–Chebyshev radial quadrature.
 
-**Gaps to close (this project):**
+**Status — all five gaps closed, merged to `gpu-porting`:**
 
 | Gap | Where | Notes |
 |-----|-------|-------|
-| **Spin-orbit ECP (SO-ECP)** | branch `ecp-so`; design in `docs/ecp-so-design.md` | **A100-validated** — `get_ecp_so` == `mol.intor('ECPso')` to 1e-10, `get_soc_1e` == GHF SOC block, on Pb/crenbl (`ul` term) + K/ecpds10mdfso (explicit S–G projectors). `sort_ecp_basis_so`, `get_ecp_so → [3,nao,nao]`, `get_soc_1e`; `lib/ecp/ecp_so.cu` `so_cart` (= `type2_cart` + `L^a` transform of `omegaj`, **same prefactor as scalar type-2**) + `ECP_so_cart` entry; `so_ang_matrix.cu`. Remaining: templated fast paths (perf), merge, spinor/GHF wiring (separate). |
-| ~~**Screening**~~ | `gto/ecp.py` | DONE on branch `ecp-screening` (A100-validated, screened==unscreened to 1e-13). Two-level `check_3c_overlap`-style screen; toggle `ecp.SCREEN_ECP`. Benchmark (`benchmarks/gto/ecp_screening.md`): 14x/55x/182x on Cu-chain N=20/40/80. Pending: merge. |
-| ~~**ECP-atom slicing in grad/hess**~~ | `gto/ecp.py`, `grad/rhf.py`, `hessian/rhf.py`, `lib/cuest_wrapper.py` | DONE on branch `ecp-atom-slicing` (pending GPU validation). `loop_ecp_ip`/`loop_ecp_ipip` generators + `get_ecp_ip_sum`/`get_ecp_ipip_sum` process ECP atoms in memory-bounded batches; the `[n_ecp_atm,3or9,nao,nao]` tensor is never materialized. `get_ecp_ip`/`get_ecp_ipip` kept as concatenating wrappers. |
-| **PBC ECP** | `pyscf/pbc/gto/ecp.py`, `pyscf/lib/pbc/nr_ecp.c` | No GPU path. Lower priority. |
-| ~~**Validation breadth**~~ | `gto/tests/test_ecp_sweep.py` | DONE (merged). 1526 A100 subtests: get_ecp/_ip/_ipip/_so/get_soc_1e vs `mol.intor` across ~12 scalar + 6 SO ECP sets × ~19 elements Na–Bi, cart+sph, s..g probe basis. |
+| ~~**Screening**~~ | `gto/ecp.py` | Two-level `check_3c_overlap` screen (`_screen_block`, `SCREEN_ECP` toggle). A100: screened==unscreened to 1e-13; 14x/55x/189x on Cu-chain N=20/40/80 (`benchmarks/gto/ecp_screening.md`). |
+| ~~**ECP-atom slicing in grad/hess**~~ | `gto/ecp.py`, `grad/rhf.py`, `hessian/rhf.py`, `lib/cuest_wrapper.py` | `loop_ecp_ip`/`loop_ecp_ipip` + `get_ecp_ip_sum`/`get_ecp_ipip_sum` batch over ECP atoms; the `[n_ecp_atm,3or9,nao,nao]` tensor is never materialized. `get_ecp_ip`/`get_ecp_ipip` kept as concatenating wrappers. 23 A100 tests. |
+| ~~**Spin-orbit ECP (SO-ECP)**~~ | `gto/ecp.py`, `lib/ecp/ecp_so.cu`; `docs/ecp-so-design.md` | `get_ecp_so → [3,nao,nao]` real + `get_soc_1e → [2nao,2nao]`. `so_cart` = `type2_cart` + `L^a` transform of `omegaj` (`so_ang_matrix.cu`), **same prefactor as scalar type-2** (no complex kernel). A100: == `mol.intor('ECPso')`/GHF block to 1e-10 on `ul` + explicit S–G projectors. Follow-ups: templated fast paths, spinor/GHF wiring. |
+| ~~**Validation breadth**~~ | `gto/tests/test_ecp_sweep.py` | 1526 A100 subtests: get_ecp/_ip/_ipip/_so/get_soc_1e vs `mol.intor` across ~12 scalar + 6 SO ECP sets × ~19 elements Na–Bi, cart+sph, s..g probe basis. |
+| ~~**PBC ECP**~~ | `pbc/gto/ecp.py`, `pbc/scf/hf.py`; `docs/ecp-pbc-design.md` | `ecp_int(cell, kpts=None)` scalar Γ+k-points — supmol lattice sum reusing `libgecp.ECP_cart`, no new CUDA. Wired into `pbc/scf/hf.get_hcore`. A100: == `pyscf.pbc.gto.ecp.ecp_int` to 5e-9. Follow-ups: SO PBC-ECP (phase 3), rectangular kernel to drop the `[nao_sup,nao_sup]` intermediate (phase 4). |
 | Blackwell / CUDA<13.1 nvcc bug | `lib/ecp/CMakeLists.txt` | Known miscompile; currently worked around by disabling opt. Track a real fix. |
 
 ## Coupled cluster — status & remaining work
