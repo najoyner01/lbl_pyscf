@@ -250,7 +250,8 @@ class SCF(mol_hf.SCF):
         else:
             hcore = ni.get_nuc(kpt)
         if len(cell._ecpbas) > 0:
-            raise NotImplementedError('ECP in PBC SCF')
+            from gpu4pyscf.pbc.gto.ecp import ecp_int
+            hcore = hcore + ecp_int(cell, kpt)
         hcore += int1e.int1e_kin(cell, kpt)
         return hcore
 
