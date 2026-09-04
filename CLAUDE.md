@@ -136,7 +136,7 @@ as `libgecp`):
 | ~~**Screening**~~ | `gto/ecp.py` | DONE on branch `ecp-screening` (A100-validated, screened==unscreened to 1e-13). Two-level `check_3c_overlap`-style screen; toggle `ecp.SCREEN_ECP`. Benchmark (`benchmarks/gto/ecp_screening.md`): 14x/55x/182x on Cu-chain N=20/40/80. Pending: merge. |
 | ~~**ECP-atom slicing in grad/hess**~~ | `gto/ecp.py`, `grad/rhf.py`, `hessian/rhf.py`, `lib/cuest_wrapper.py` | DONE on branch `ecp-atom-slicing` (pending GPU validation). `loop_ecp_ip`/`loop_ecp_ipip` generators + `get_ecp_ip_sum`/`get_ecp_ipip_sum` process ECP atoms in memory-bounded batches; the `[n_ecp_atm,3or9,nao,nao]` tensor is never materialized. `get_ecp_ip`/`get_ecp_ipip` kept as concatenating wrappers. |
 | **PBC ECP** | `pyscf/pbc/gto/ecp.py`, `pyscf/lib/pbc/nr_ecp.c` | No GPU path. Lower priority. |
-| **Validation breadth** | — | Sweep basis L up to g, all `crenbl`/`def2`/`ccECP` sets, f-in-core; compare to PySCF to 1e-10; benchmark vs CPU across system sizes. |
+| ~~**Validation breadth**~~ | `gto/tests/test_ecp_sweep.py` | DONE (merged). 1526 A100 subtests: get_ecp/_ip/_ipip/_so/get_soc_1e vs `mol.intor` across ~12 scalar + 6 SO ECP sets × ~19 elements Na–Bi, cart+sph, s..g probe basis. |
 | Blackwell / CUDA<13.1 nvcc bug | `lib/ecp/CMakeLists.txt` | Known miscompile; currently worked around by disabling opt. Track a real fix. |
 
 ## Coupled cluster — status & remaining work
