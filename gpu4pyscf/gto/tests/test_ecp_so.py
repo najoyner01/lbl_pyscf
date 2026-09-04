@@ -48,6 +48,8 @@ K    D
       1.0        1.0
 K    F
       1.2        1.0
+K    G
+      1.1        1.0
 ''')
     return gto.M(atom='K 0 0 0; F 0 0 2.2', basis={'K': kbas, 'F': kbas},
                  ecp={'K': 'ecpds10mdfso'}, spin=0, charge=0,
