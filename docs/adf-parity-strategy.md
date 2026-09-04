@@ -66,7 +66,58 @@ gaps are narrower than "replace ADF" sounds:
 4. ETS-NOCV / QTAIM / FDE — bonding-analysis tools some ADF users lean on
    heavily; only relevant if your workflow uses them.
 
-## 2. Recommended path to "SOC during geometry optimization"
+## 1b. Scope locked in 2026-09-04
+
+User confirmed: **periodic is separate materials work, not in scope for
+ADF-replacement** (molecular only from here). EPR/ESR and full ETS-NOCV/QTAIM
+are both needed. Accepted near-term target: **X2C-SOC energies only (no
+gradient yet) + ECP-SOC gradients as the interim geometry-optimization path.**
+
+Investigation findings that revise the plan below:
+
+- **GKS + spin-orbit X2C energies is very likely already functional**, not new
+  engineering. `gpu4pyscf.dft.gks.GKS(rks.KohnShamDFT, GHF)` — GKS *is-a* GHF
+  — and `GHF.x2c1e()`/`.x2c()` (→ `x2c1e_ghf`) only asserts
+  `isinstance(mf, ghf.GHF)`, which GKS satisfies; neither `gks.py` nor `rks.py`
+  override `x2c`/`x2c1e`. The `X2C1E_GSCF` mixin only replaces `get_hcore`
+  (with the 2-component X2C Hamiltonian, spin-free + spin-dependent terms
+  folded in via `SpinOrbitalX2CHelper`) and leaves GKS's `get_veff`/XC
+  machinery untouched. So `dft.gks.GKS(mol, xc=...).x2c1e()` should already
+  give spin-orbit X2C-DFT. **Needs a validation test on Perlmutter, not a new
+  implementation** — treat as unverified-but-likely-working until tested.
+  Requires an all-electron relativistic basis (e.g. `x2c-tzvpall`,
+  ANO-RCC-derived) for the actinide; not compatible with `mol.has_ecp()` by
+  design (X2C is all-electron; ECP and X2C are alternatives, never combined).
+- **No CPU pyscf oracle exists for GHF nuclear gradients** (`pyscf/grad/`
+  has no `ghf.py`) **or for SO-ECP gradient integrals** (only the scalar
+  `ECPso` energy `intor` exists, no derivative). But `pyscf/grad/dhf.py`
+  (Dirac-HF gradient) shows the *general* pattern is standard and simple:
+  hcore-derivative + JK-derivative + Pulay overlap term, real part of a
+  complex spinor-density trace — GHF is actually a simplification of DHF (2c,
+  no small-component/kinetic-balance term). The gap is that nobody wrote the
+  GHF-specific driver, not that the theory is missing. Validation for both new
+  pieces falls back to finite-difference (of the SCF energy for the GHF
+  gradient driver; of the `get_ecp_so` integral matrix directly for the
+  SO-ECP derivative kernel) — the same standard PySCF's own test suite uses
+  when landing a genuinely new derivative.
+
+Revised near-term sequence:
+1. Validate GKS+X2C-SOC on an actinide test case (Perlmutter). If it doesn't
+   already work, fix forward from there rather than building from scratch.
+2. `grad/ghf.py` — GHF nuclear gradient (hcore/JK/overlap Pulay-force pattern,
+   no SOC yet). Validate vs finite difference and vs RHF-gradient reduction on
+   a closed-shell system (GHF without SOC should reduce to RHF).
+3. SO-ECP gradient integrals (extend `lib/ecp/ecp_so.cu`, mirroring how
+   `ecp_type2_ip.cu` extends `ecp_type2.cu` for the scalar case). Validate vs
+   finite difference of `get_ecp_so`.
+4. Wire 2+3 together: ECP-SOC contribution in `GHF.Gradients()` → the agreed
+   interim optimization path. Validate full SCF+gradient vs finite difference
+   of the GHF+ECP-SOC total energy.
+5. EPR/ESR (g/A/D-tensor) and full ETS-NOCV/QTAIM — separate, large tracks;
+   scope after 1-4 land, since geometry optimization is a workflow
+   prerequisite for property/bonding-analysis calculations in practice.
+
+## 2. Recommended path to "SOC during geometry optimization" (superseded by §1b above, kept for the original relativistic-method reasoning)
 
 Revising the earlier plan (which targeted ECP+GHF gradients specifically):
 
