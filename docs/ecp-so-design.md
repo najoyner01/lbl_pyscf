@@ -111,11 +111,18 @@ Out of scope for the first landing — `get_ecp_so` + tests first.
 
 ## Phasing
 
-1. **(this branch, done)** design doc, `_l_op` constants + generator/verifier,
-   Python `get_ecp_so` / `get_soc_1e` skeleton, test file (xfail until kernel).
-2. `ecp_so.cu` general (non-templated) kernel + `ECP_so_cart` driver entry;
-   get test 1 green on Perlmutter.
-3. Templated `(li,lj,lc)` fast paths; screening; basis-L sweep.
+1. **done** — design doc, `_l_op` constants + generator/verifier, Python
+   `get_ecp_so` / `get_soc_1e` skeleton, test file (skips until kernel).
+2. **code done, needs GPU validation** — `ecp_so.cu` general (non-templated)
+   `so_cart` kernel + `ECP_so_cart` driver entry (`nr_ecp_driver.cu`).
+   Rebuild `libgecp` on Perlmutter, run `test_ecp_so.py`.
+   - `so_cart` = general `type2_cart` + `transform_omega_lop` (apply `L^a` to
+     the trailing `2lc+1` projector dim of `omegaj`, exploiting that
+     `type2_ang` is linear in `omega`) + `fac *= 0.5`, looped `a = 0,1,2`.
+   - **First things to check if the value test fails:** (a) overall sign of
+     the antisymmetric transpose write — flip `fac` sign if `|ref-got| ≈ 2·max|ref|`;
+     (b) the `0.5` factor; (c) `gctr` bra/ket index order vs `mol.intor('ECPso')`.
+3. Templated `(li,lj,lc)` fast paths; basis-L sweep s..g.
 4. Spinor-basis path + GHF/x2c wiring (separate branch).
 
 ## Notes / risks
