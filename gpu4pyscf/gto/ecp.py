@@ -419,7 +419,9 @@ def get_ecp_so(mol):
                     raise RuntimeError('SO-ECP CUDA kernel failed.')
 
     coeff = cp.asarray(coeff)
-    return contract('aij,ip,jq->apq', mat1, coeff, coeff)
+    mat1 = contract('aij,jq->aiq', mat1, coeff)
+    mat1 = contract('aiq,ip->apq', mat1, coeff)
+    return mat1
 
 
 def get_soc_1e(mol):
@@ -434,7 +436,8 @@ def get_soc_1e(mol):
     so = get_ecp_so(mol)                       # [3, nao, nao] real
     nao = so.shape[-1]
     pauli = cp.asarray(pyscf_lib.PauliMatrices)   # [3, 2, 2] complex
-    hso = contract('sxy,spq->xpyq', -1j * 0.5 * pauli, so.astype(cp.complex128))
+    hso = cp.einsum('sxy,spq->xpyq', -1j * 0.5 * pauli,
+                    so.astype(cp.complex128))
     return hso.reshape(2 * nao, 2 * nao)
 
 

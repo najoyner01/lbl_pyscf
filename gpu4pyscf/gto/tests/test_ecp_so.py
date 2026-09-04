@@ -57,7 +57,9 @@ class UnitSort(unittest.TestCase):
         self.assertTrue(np.all(out[:, gto.SO_TYPE_OF] == 1))
         self.assertTrue(np.all(out[:, gto.ANG_OF] >= 0))          # ul rewritten
         self.assertEqual(int(ecp_loc[-1]), len(out))
-        self.assertEqual(l_counts.sum(), len(out))
+        # l_counts is (l,atom)-groups per unique l, matching sort_ecp_basis
+        self.assertEqual(int(l_counts.sum()), len(ecp_loc) - 1)
+        self.assertEqual(len(uniq_l), len(l_counts))
 
     def test_ul_becomes_lmax_plus_one(self):
         # synthetic: one atom, non-ul l=1 projector + a ul term
