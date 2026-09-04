@@ -118,10 +118,13 @@ Out of scope for the first landing — `get_ecp_so` + tests first.
    Rebuild `libgecp` on Perlmutter, run `test_ecp_so.py`.
    - `so_cart` = general `type2_cart` + `transform_omega_lop` (apply `L^a` to
      the trailing `2lc+1` projector dim of `omegaj`, exploiting that
-     `type2_ang` is linear in `omega`) + `fac *= 0.5`, looped `a = 0,1,2`.
-   - **First things to check if the value test fails:** (a) overall sign of
-     the antisymmetric transpose write — flip `fac` sign if `|ref-got| ≈ 2·max|ref|`;
-     (b) the `0.5` factor; (c) `gctr` bra/ket index order vs `mol.intor('ECPso')`.
+     `type2_ang` is linear in `omega`), looped `a = 0,1,2`. **Same prefactor
+     as scalar type-2** — the `prad[i] *= .5` in `ECPtype_so_cart` is CPU
+     iterative-quadrature bookkeeping, not physical (diagnosed 2026-09-03:
+     the GPU result was exactly `0.5 × mol.intor('ECPso')` before removing it).
+   - Value test vs `mol.intor('ECPso')` on `Pb/O crenbl`: **exact factor of 2**
+     (uniform `got/ref = 0.5`, correct antisymmetric structure) → removed the
+     stray `fac *= 0.5`.
 3. Templated `(li,lj,lc)` fast paths; basis-L sweep s..g.
 4. Spinor-basis path + GHF/x2c wiring (separate branch).
 

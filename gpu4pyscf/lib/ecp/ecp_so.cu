@@ -19,17 +19,22 @@
  *
  *     gctr[a, i, j] = < i | l_a  dU^SO(r) | j >,   a in {x, y, z}
  *
- * This is the type-2 (semilocal) machinery of ecp_type2.cu with three changes,
+ * This is the type-2 (semilocal) machinery of ecp_type2.cu with two changes,
  * matching ECPtype_so_cart() in pyscf/lib/gto/nr_ecp.c:
  *
- *   1. the reduced radial integral carries an extra factor 1/2;
- *   2. the shell-j angular factor is contracted with the angular-momentum
+ *   1. the shell-j angular factor is contracted with the angular-momentum
  *      operator L^a_{m'm} (so_ang_matrix.cu, real & antisymmetric) on the
  *      projector spherical index -- producing three components instead of one.
  *      type2_ang() is linear in `omega`, so we apply L^a to omegaj up front
  *      (transform_omega_lop) and reuse the scalar contraction unchanged;
- *   3. the driver feeds only SO_TYPE_OF == 1 projectors, with the `ul` term
+ *   2. the driver feeds only SO_TYPE_OF == 1 projectors, with the `ul` term
  *      (lc == -1) already rewritten to max_l(atom)+1 on the host side.
+ *
+ * The prefactor is identical to the scalar type-2 kernel: the `prad[i] *= .5`
+ * in ECPtype_so_cart is part of the CPU's iterative multi-level quadrature
+ * refinement (compensating point-doubling between levels), not a physical
+ * factor -- see the `//common_fac *= .5` comment there. The GPU uses a single
+ * fixed 128-point rule, so no extra 1/2.
  *
  * The output is real and antisymmetric in (i, j): < j | l_a U | i > =
  * -< i | l_a U | j >.  The task list is triangular (ish <= jsh); the off
@@ -147,9 +152,8 @@ void so_cart(double * __restrict__ gctr,
     }
     __syncthreads();
 
-    // extra 1/2 from the SO reduced radial integral (pyscf: prad[i] *= .5)
-    const double fac = 0.5 * 16.0 * M_PI * M_PI
-                       * _common_fac[LI] * _common_fac[LJ];
+    // same prefactor as the scalar type-2 kernel (no extra 1/2 -- see header)
+    const double fac = 16.0 * M_PI * M_PI * _common_fac[LI] * _common_fac[LJ];
 
     constexpr int nreg = (NF_MAX*NF_MAX + THREADS - 1)/THREADS;
     const int ioff = ao_loc[ish];
