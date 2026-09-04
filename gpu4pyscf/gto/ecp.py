@@ -44,6 +44,11 @@ libecp.ECP_ip_cart.argtypes = ecp_cart_argtypes
 libecp.ECP_ipipv_cart.argtypes = ecp_cart_argtypes
 libecp.ECP_ipvip_cart.argtypes = ecp_cart_argtypes
 
+# Spin-orbit ECP kernel (may be absent in an older libgecp build).
+_HAS_SO = hasattr(libecp, 'ECP_so_cart')
+if _HAS_SO:
+    libecp.ECP_so_cart.argtypes = ecp_cart_argtypes
+
 ECP_ATOM_ID = 7
 
 # Enable/disable the shell-pair x ECP-center screening of the task list.
@@ -325,6 +330,112 @@ def get_ecp(mol):
                     raise RuntimeError('ECP CUDA kernel failed.')
     coeff = cp.asarray(coeff)
     return coeff.T @ mat1 @ coeff
+
+
+def sort_ecp_basis_so(_ecpbas):
+    '''Like :func:`sort_ecp_basis` but keeps only the spin-orbit projectors
+    (``SO_TYPE_OF == 1``) and rewrites the ``ul`` term (``ANG_OF == -1``) to
+    ``max_l(atom) + 1``, matching ECPtype_so_cart in pyscf/lib/gto/nr_ecp.c.
+    '''
+    _ecpbas = _ecpbas[_ecpbas[:, gto.SO_TYPE_OF] == 1].copy()
+    if len(_ecpbas) == 0:
+        return _ecpbas, np.zeros(0, dtype=int), np.zeros(0, dtype=int), \
+            np.zeros(1, dtype=int)
+
+    # ul term (lc == -1) is treated as L_max + 1 for that atom
+    # CPU (ECPtype_so_cart): ecp_lmax[atom] starts at 0 and is raised by the
+    # non-ul projectors; the ul term then becomes ecp_lmax[atom] + 1.
+    ul = _ecpbas[:, gto.ANG_OF] == -1
+    if np.any(ul):
+        for atm_id in np.unique(_ecpbas[ul, gto.ATOM_OF]):
+            rows = _ecpbas[:, gto.ATOM_OF] == atm_id
+            lmax = _ecpbas[rows & ~ul, gto.ANG_OF].max(initial=0)
+            _ecpbas[rows & ul, gto.ANG_OF] = lmax + 1
+
+    l_atm = _ecpbas[:, [gto.ANG_OF, gto.ATOM_OF]]
+    uniq_l_atm, inv_idx, l_atm_counts = np.unique(
+        l_atm, return_inverse=True, return_counts=True, axis=0)
+    sorted_idx = np.argsort(inv_idx.ravel(), kind='stable').astype(np.int32)
+    _ecpbas = _ecpbas[sorted_idx]
+    ecp_loc = np.append(0, np.cumsum(l_atm_counts))
+    uniq_l, l_counts = np.unique(uniq_l_atm[:, 0], return_counts=True, axis=0)
+    return _ecpbas, uniq_l, l_counts, ecp_loc
+
+
+def get_ecp_so(mol):
+    '''Spin-orbit ECP integrals, real cartesian-component form.
+
+    Returns
+        CuPy array ``[3, nao, nao]`` (spherical AO basis, real): the three
+        components ``<i| l_a dU^SO |j>`` for ``a in {x, y, z}``.  Equivalent to
+        ``mol.intor('ECPso')``.  Assemble the spinor operator with
+        :func:`get_soc_1e`.
+    '''
+    assert len(mol._ecpbas) > 0
+    if not _HAS_SO:
+        raise NotImplementedError(
+            'libgecp was built without ECP_so_cart; rebuild gpu4pyscf/lib.')
+    if not np.any(mol._ecpbas[:, gto.SO_TYPE_OF] == 1):
+        raise ValueError('mol has no spin-orbit ECP projectors')
+
+    _sorted_mol, coeff, uniq_l_ctr, l_ctr_counts = group_basis(mol)
+    _ecpbas, uniq_lecp, lecp_counts, ecp_loc = sort_ecp_basis_so(
+        _sorted_mol._ecpbas)
+
+    l_ctr_offsets = np.append(0, np.cumsum(l_ctr_counts))
+    lecp_offsets = np.append(0, np.cumsum(lecp_counts))
+
+    screen_data = _build_screen_data(_sorted_mol, _ecpbas, ecp_loc)
+    tasks_all = make_tasks(l_ctr_offsets, lecp_offsets, screen_data,
+                           _ecp_expcutoff(mol))
+
+    atm = cp.asarray(_sorted_mol._atm, dtype=np.int32)
+    bas = cp.asarray(_sorted_mol._bas, dtype=np.int32)
+    env = cp.asarray(_sorted_mol._env, dtype=np.float64)
+    ecpbas = cp.asarray(_ecpbas, dtype=np.int32)
+    ecploc = cp.asarray(ecp_loc, dtype=np.int32)
+    n_groups = len(uniq_l_ctr)
+    n_ecp_groups = len(uniq_lecp)
+    ao_loc = _sorted_mol.ao_loc_nr(cart=True)
+    nao = int(ao_loc[-1])
+    ao_loc = cp.asarray(ao_loc, dtype=np.int32)
+
+    mat1 = cp.zeros([3, nao, nao])
+    for i in range(n_groups):
+        for j in range(i, n_groups):
+            for k in range(n_ecp_groups):
+                task = tasks_all[i, j, k]
+                if len(task) == 0:
+                    continue
+                task = cp.asarray(task, dtype=np.int32, order='F')
+                err = libecp.ECP_so_cart(
+                    mat1.data.ptr, ao_loc.data.ptr, nao,
+                    task.data.ptr, len(task),
+                    ecpbas.data.ptr, ecploc.data.ptr,
+                    atm.data.ptr, bas.data.ptr, env.data.ptr,
+                    int(uniq_l_ctr[i, 0]), int(uniq_l_ctr[j, 0]),
+                    int(uniq_lecp[k]))
+                if err != 0:
+                    raise RuntimeError('SO-ECP CUDA kernel failed.')
+
+    coeff = cp.asarray(coeff)
+    return contract('aij,ip,jq->apq', mat1, coeff, coeff)
+
+
+def get_soc_1e(mol):
+    '''One-electron spin-orbit ECP operator in the 2-component (spinor) basis.
+
+    Returns
+        CuPy array ``[2*nao, 2*nao]`` complex, matching the SOC block that
+        ``pyscf.scf.ghf.GHF.get_hcore`` adds:
+        ``einsum('sxy,spq->xpyq', -1j * 0.5 * PauliMatrices, get_ecp_so(mol))``.
+    '''
+    from pyscf import lib as pyscf_lib
+    so = get_ecp_so(mol)                       # [3, nao, nao] real
+    nao = so.shape[-1]
+    pauli = cp.asarray(pyscf_lib.PauliMatrices)   # [3, 2, 2] complex
+    hso = contract('sxy,spq->xpyq', -1j * 0.5 * pauli, so.astype(cp.complex128))
+    return hso.reshape(2 * nao, 2 * nao)
 
 
 _IP_FN = {

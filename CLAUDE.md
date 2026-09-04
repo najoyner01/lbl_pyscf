@@ -132,7 +132,7 @@ as `libgecp`):
 
 | Gap | Where | Notes |
 |-----|-------|-------|
-| **Spin-orbit ECP (SO-ECP)** | CPU: `pyscf/gto/ecp.py:so_by_shell`, `ECPso_spinor` | GPU code explicitly drops SO terms (`sort_ecp_basis` filters `SO_TYPE_OF != 0`). Needed for X2C/SOC, spinor GHF. New kernel `ecp_so.cu` + spinor assembly. |
+| **Spin-orbit ECP (SO-ECP)** | branch `ecp-so`; design in `docs/ecp-so-design.md` | Python scaffold landed: `sort_ecp_basis_so`, `get_ecp_so` → `[3,nao,nao]` real, `get_soc_1e` (Pauli assembly), `so_ang_matrix.cu` constants, `test_ecp_so.py`. **Kernel `lib/ecp/ecp_so.cu` + `ECP_so_cart` driver entry still TODO** — it's `type2_cart` + `transform_angj` (3-component `L^a` matrix) + ½ factor; no complex kernel needed. |
 | ~~**Screening**~~ | `gto/ecp.py` | DONE on branch `ecp-screening` (A100-validated, screened==unscreened to 1e-13). Two-level `check_3c_overlap`-style screen; toggle `ecp.SCREEN_ECP`. Benchmark (`benchmarks/gto/ecp_screening.md`): 14x/55x/182x on Cu-chain N=20/40/80. Pending: merge. |
 | ~~**ECP-atom slicing in grad/hess**~~ | `gto/ecp.py`, `grad/rhf.py`, `hessian/rhf.py`, `lib/cuest_wrapper.py` | DONE on branch `ecp-atom-slicing` (pending GPU validation). `loop_ecp_ip`/`loop_ecp_ipip` generators + `get_ecp_ip_sum`/`get_ecp_ipip_sum` process ECP atoms in memory-bounded batches; the `[n_ecp_atm,3or9,nao,nao]` tensor is never materialized. `get_ecp_ip`/`get_ecp_ipip` kept as concatenating wrappers. |
 | **PBC ECP** | `pyscf/pbc/gto/ecp.py`, `pyscf/lib/pbc/nr_ecp.c` | No GPU path. Lower priority. |
