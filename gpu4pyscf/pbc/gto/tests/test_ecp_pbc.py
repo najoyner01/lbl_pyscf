@@ -13,10 +13,12 @@
 # limitations under the License.
 
 '''
-Acceptance criteria for gpu4pyscf.pbc.gto.ecp.ecp_int (PBC scalar ECP).
+Acceptance criteria for gpu4pyscf.pbc.gto.ecp.ecp_int -- PBC scalar ECP
+(intor='ECPscalar') and spin-orbit ECP (intor='ECPso').
 
-Compares against pyscf.pbc.gto.ecp.ecp_int at Gamma and on a k-point mesh.
-Skips (xfails) until ecp_int is implemented -- see docs/ecp-pbc-design.md.
+Compares against pyscf.pbc.gto.ecp.ecp_int at Gamma and on a k-point mesh;
+checks Hermiticity, rcut convergence, ket-image batch invariance, and that
+pbc/scf get_hcore picks up the ECP.  See docs/ecp-pbc-design.md.
 '''
 
 import unittest
@@ -99,6 +101,74 @@ class KnownValues(unittest.TestCase):
         c2.rcut = self.cell.rcut * 1.5
         b = cp.asnumpy(gpu_ecp.ecp_int(c2))
         self.assertLess(abs(a - b).max(), 1e-9)
+
+    def test_image_batching_invariant(self):
+        # phase-4 ket-image batching must not change the result
+        import gpu4pyscf.pbc.gto.ecp as m
+        saved = m._image_batch_size
+        try:
+            m._image_batch_size = lambda *a, **k: 1        # one image per batch
+            got1 = cp.asnumpy(gpu_ecp.ecp_int(self.cell))
+            m._image_batch_size = lambda *a, **k: 10**9     # all in one batch
+            gotN = cp.asnumpy(gpu_ecp.ecp_int(self.cell))
+        finally:
+            m._image_batch_size = saved
+        self.assertLess(abs(got1 - gotN).max(), 1e-12)
+
+
+def _so_cell():
+    '''Small periodic cell with a spin-orbit ECP, or None if the SO set does
+    not cover a convenient element in this PySCF build.'''
+    for elem, ecp_name, a in (('I', 'ecpds28mdfso', 7.0),
+                              ('Cs', 'ecpds46mdfso', 8.0),
+                              ('Xe', 'ecpds28mdfso', 7.0)):
+        try:
+            cell = pbcgto.Cell()
+            cell.atom = f'{elem} 0 0 0'
+            cell.a = np.eye(3) * a
+            cell.basis = 'def2-svp'
+            cell.ecp = {elem: ecp_name}
+            cell.precision = 1e-9
+            cell.verbose = 0
+            cell.build()
+        except Exception:                       # noqa: BLE001
+            continue
+        if len(cell._ecpbas) and np.any(cell._ecpbas[:, 4] == 1):  # SO_TYPE_OF
+            return cell
+    return None
+
+
+@unittest.skipUnless(_IMPORTED, 'cupy / pyscf.pbc not importable')
+@unittest.skipUnless(_implemented(), 'gpu4pyscf.pbc.gto.ecp.ecp_int not implemented')
+class SOKnownValues(unittest.TestCase):
+    '''PBC spin-orbit ECP vs pyscf.pbc.gto.ecp.ecp_int(..., intor='ECPso').'''
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cell = _so_cell()
+
+    def setUp(self):
+        if self.cell is None:
+            self.skipTest('no periodic SO-ECP element available in this build')
+
+    def test_gamma_so(self):
+        ref = cpu_ecp.ecp_int(self.cell, intor='ECPso')      # [2nao, 2nao]
+        got = cp.asnumpy(gpu_ecp.ecp_int(self.cell, intor='ECPso'))
+        self.assertEqual(got.shape, np.asarray(ref).shape)
+        self.assertLess(abs(np.asarray(ref) - got).max(), 5e-9)
+
+    def test_kpts_so(self):
+        kpts = self.cell.make_kpts([2, 1, 1])
+        ref = cpu_ecp.ecp_int(self.cell, kpts, intor='ECPso')
+        got = cp.asnumpy(gpu_ecp.ecp_int(self.cell, kpts, intor='ECPso'))
+        self.assertEqual(got.shape, np.asarray(ref).shape)
+        self.assertLess(abs(np.asarray(ref) - got).max(), 5e-9)
+
+    def test_so_hermitian(self):
+        kpts = self.cell.make_kpts([2, 2, 1])
+        got = cp.asnumpy(gpu_ecp.ecp_int(self.cell, kpts, intor='ECPso'))
+        for k in range(len(kpts)):
+            self.assertLess(abs(got[k] - got[k].conj().T).max(), 1e-10)
 
 
 @unittest.skipUnless(_IMPORTED, 'cupy / pyscf.pbc not importable')
