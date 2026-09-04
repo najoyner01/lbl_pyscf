@@ -30,13 +30,21 @@ python benchmarks/gto/benchmark_ecp_screening.py --n 20 40 80 160 --ip
 
 | N (atoms) | nao | tasks (full) | tasks (screened) | kept | `get_ecp` full / s | `get_ecp` screened / s | speed-up | max \|Δ\| |
 |----:|----:|------------:|-----------------:|-----:|-------:|-------:|-------:|-------:|
-|  20 | 1220 |   4 343 400 |   33 402 | 0.77 % |  0.718 | 0.051 |  **14x** | 2e-15 |
-|  40 | 2440 |  34 701 600 |   68 882 | 0.20 % |  5.897 | 0.108 |  **55x** | 2e-15 |
-|  80 | 4880 | 277 430 400 |  139 842 | 0.05 % | 46.953 | 0.258 | **182x** | 2e-15 |
+|  20 | 1220 |   4 343 400 |   33 402 | 0.77 % |  0.722 | 0.052 |  **14x** | 2e-15 |
+|  40 | 2440 |  34 701 600 |   68 882 | 0.20 % |  5.885 | 0.105 |  **56x** | 2e-15 |
+|  80 | 4880 | 277 430 400 |  139 842 | 0.05 % | 46.815 | 0.248 | **189x** | 2e-15 |
 
-`get_ecp_ip` (gradient integrals): 35x at N=20, 55x at N=40. N=80 not measured
-here — the dense `[n_ecp_atm, 3, nao, nao]` output buffer needs ~43 GiB
-(addressed separately by ECP-atom slicing).
+Derivative path, `get_ecp_ip_sum` (the memory-bounded reduction a real gradient
+calls — `grad/rhf.get_hcore`):
+
+| N | `get_ecp_ip_sum` full / s | screened / s | speed-up | max \|Δ\| |
+|----:|-------:|-------:|-------:|-------:|
+|  20 |  4.583 | 0.136 | **34x** | 7e-15 |
+|  40 | 35.296 | 0.703 | **50x** | 7e-15 |
+
+(The dense `get_ecp_ip` tensor `[n_ecp_atm, 3, nao, nao]` needs ~43 GiB at
+N = 80 and is never built by the gradient/Hessian code after ECP-atom slicing;
+`get_ecp_ip_sum` runs at any N.)
 
 ## Reading the numbers
 
