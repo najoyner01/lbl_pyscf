@@ -29,22 +29,43 @@ from pyscf import gto, lib
 from gpu4pyscf.gto import ecp
 
 
-# A small SO-ECP: Pb with the CRENBL relativistic ECP (has SO projectors).
-def _mol():
+# Pb/CRENBL: SO projectors are the `ul` term (lc == -1 -> lmax+1 on the host).
+def _mol_ul():
     return gto.M(atom='Pb 0 0 0; O 0 0 2.0', basis='crenbl', ecp='crenbl',
                  spin=0, charge=0, cart=False, verbose=0, output='/dev/null')
 
 
+# K/ecpds10mdfso: explicit S,P,D,F SO projectors -> exercises lc = 0..3.
+def _mol_explicit():
+    kbas = gto.basis.parse('''
+K    S
+      3.0        1.0
+      0.8        1.0
+K    P
+      2.5        1.0
+      0.5        1.0
+K    D
+      1.0        1.0
+K    F
+      1.2        1.0
+''')
+    return gto.M(atom='K 0 0 0; F 0 0 2.2', basis={'K': kbas, 'F': kbas},
+                 ecp={'K': 'ecpds10mdfso'}, spin=0, charge=0,
+                 cart=False, verbose=0, output='/dev/null')
+
+
 def setUpModule():
-    global mol, has_so
-    mol = _mol()
+    global mol, mol_x, has_so
+    mol = _mol_ul()
+    mol_x = _mol_explicit()
     has_so = bool(np.any(mol._ecpbas[:, gto.SO_TYPE_OF] == 1))
 
 
 def tearDownModule():
-    global mol
+    global mol, mol_x
     mol.stdout.close()
-    del mol
+    mol_x.stdout.close()
+    del mol, mol_x
 
 
 class UnitSort(unittest.TestCase):
@@ -78,10 +99,17 @@ class KnownValues(unittest.TestCase):
         if not has_so:
             self.skipTest('test molecule has no SO-ECP projectors')
 
-    def test_get_ecp_so_vs_cpu(self):
+    def test_get_ecp_so_vs_cpu_ul(self):
+        self._compare(mol)
+
+    def test_get_ecp_so_vs_cpu_explicit_projectors(self):
+        # K/ecpds10mdfso: SO projectors with explicit lc = 0,1,2,3
+        self._compare(mol_x)
+
+    def _compare(self, m):
         import cupy as cp
-        ref = mol.intor('ECPso')                 # [3, nao, nao] real
-        got = cp.asnumpy(ecp.get_ecp_so(mol))
+        ref = m.intor('ECPso')                    # [3, nao, nao] real
+        got = cp.asnumpy(ecp.get_ecp_so(m))
         self.assertEqual(got.shape, ref.shape)
         self.assertAlmostEqual(abs(ref - got).max(), 0, 10)
 
