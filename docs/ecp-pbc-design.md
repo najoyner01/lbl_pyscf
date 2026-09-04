@@ -58,16 +58,24 @@ single launch is both simpler and faster than `nL` separate launches.
 
 ## Phasing
 
-1. **(this branch)** Γ + k-point **scalar** `ecp_int(cell, kpts=None)` →
-   `[nkpts, nao, nao]` complex (real at Γ). Reuses `libgecp.ECP_cart` unchanged
-   via the supmol; no new CUDA. Validate vs `pyscf.pbc.gto.ecp.ecp_int`.
-2. Wire into `gpu4pyscf/pbc/scf/hf.py:get_hcore` (drop the `NotImplementedError`).
-3. **SO** PBC ECP: same supmol, `libgecp.ECP_so_cart` → `[nkpts, 3, nao, nao]`
-   real, then the Pauli step → `[nkpts, 2nao, 2nao]`.
-4. Rectangular kernel entry `ECP_cart_rect` (separate bra/ket `ao_loc`, no
-   mirror, output `[nao_ref, nL·nao_ref]`) to avoid the `[nao_sup, nao_sup]`
-   allocation — perf/memory, not correctness.
-5. Derivatives: PBC ECP gradient / stress (for `pbc/grad`), much later.
+1. **DONE (merged a1a1947).** Γ + k-point **scalar** `ecp_int(cell, kpts=None)`
+   → `[nao,nao]` real (Γ) / `[nkpts,nao,nao]`. Reuses `libgecp.ECP_cart`
+   unchanged via the supmol; no new CUDA. Validated vs
+   `pyscf.pbc.gto.ecp.ecp_int` to 5e-9.
+2. **DONE (merged a1a1947).** Wired into `pbc/scf/hf.py:get_hcore`.
+3. **DONE (branch ecp-pbc-followups).** **SO** PBC ECP —
+   `ecp_int(cell, kpts, intor='ECPso')`: same supmol with `sort_ecp_basis_so`
+   + `libgecp.ECP_so_cart` → `[nkpts,3,nao,nao]` real, then the Pauli step
+   `einsum('sxy,kspq->kxpyq', -1j·½·σ, ·)` → `[nkpts,2nao,2nao]`. No new CUDA.
+   Matches `pyscf.pbc.gto.ecp.ecp_int(cell, kpts, 'ECPso')`.
+4. **DONE (branch ecp-pbc-followups).** Ket-image **batching** instead of a
+   rectangular kernel: `_lattice_ecp_cart` processes the ket lattice images in
+   memory-bounded chunks (`_image_batch_size` from `get_avail_mem`), so the
+   transient `[comp, nao_ref·(1+b), nao_ref·(1+b)]` supmol matrix stays within
+   GPU memory for large cells. The ECP-projector image sum stays full (cheap).
+   Pure Python; result is batch-invariant (test).
+5. Derivatives: PBC ECP gradient / stress (for `pbc/grad`), much later — the
+   one remaining PBC-ECP follow-up.
 
 ## Validation
 
@@ -91,4 +99,8 @@ single launch is both simpler and faster than `nL` separate launches.
   the smallest ECP exponent + `cell.precision`.
 - Low-dimensional cells (`cell.dimension < 3`): `get_lattice_Ls` handles it, but
   test 1-D/2-D separately.
-- The `[nao_sup, nao_sup]` intermediate (phase 1) caps cell size; phase 4 fixes.
+- The `[comp, nao_sup, nao_sup]` intermediate is now bounded by ket-image
+  batching (phase 4). A true rectangular kernel entry (`ECP_cart_rect`, separate
+  bra/ket `ao_loc`, no mirror write) would still be faster — it avoids
+  recomputing the bra-side omega/radial factors per batch — but is a CUDA change
+  and only a perf refinement now.
