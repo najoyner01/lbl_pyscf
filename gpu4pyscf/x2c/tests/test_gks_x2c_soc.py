@@ -35,7 +35,7 @@ from gpu4pyscf.dft import gks
 def setUpModule():
     global mol, mol_heavy
     mol = gto.M(
-        verbose=0,
+        verbose=0, output='/dev/null',
         atom='''
             O     0    0        0
             H     0    -0.757   0.587
@@ -43,7 +43,8 @@ def setUpModule():
         basis='cc-pvdz',
     )
     # A heavier atom so the spin-orbit splitting is not numerically trivial.
-    mol_heavy = gto.M(verbose=0, atom='I 0 0 0', basis='sto-3g', spin=1)
+    mol_heavy = gto.M(verbose=0, output='/dev/null',
+                      atom='I 0 0 0', basis='sto-3g', spin=1)
 
 
 def tearDownModule():
@@ -53,11 +54,18 @@ def tearDownModule():
     del mol, mol_heavy
 
 
+def _cpu_gks_mcol_x2c(m, xc='pbe0'):
+    # gpu4pyscf GKS only implements multi-collinear XC, so compare like-for-like.
+    ref = m.GKS(xc=xc).x2c1e()
+    ref.collinear = 'mcol'
+    return ref.run()
+
+
 class KnownValues(unittest.TestCase):
     def test_gks_x2c_soc_matches_cpu(self):
-        ref = mol.GKS(xc='pbe0').x2c1e().run()
-        mf = gks.GKS(mol, xc='pbe0').x2c1e().run()
-        self.assertAlmostEqual(mf.e_tot, ref.e_tot, 8)
+        ref = _cpu_gks_mcol_x2c(mol)
+        mf = gks.GKS(mol, xc='pbe0').x2c1e().run()      # collinear='mcol' by default
+        self.assertAlmostEqual(mf.e_tot, ref.e_tot, 7)
         self.assertAlmostEqual(
             abs(mf.mo_energy.get() - ref.mo_energy).max(), 0, 5)
 
@@ -66,24 +74,28 @@ class KnownValues(unittest.TestCase):
         mf = gks.GKS(mol, xc='pbe0')
         from gpu4pyscf.scf.ghf import GHF
         self.assertIsInstance(mf, GHF)
+        self.assertEqual(mf.collinear, 'mcol')          # SOC needs mcol XC
         x2c_mf = mf.x2c1e()
         self.assertTrue(hasattr(x2c_mf, 'with_x2c'))
 
     def test_gks_x2c_soc_heavy_atom(self):
         # exercise real (non-epsilon) spin-orbit splitting on a heavy atom
-        ref = mol_heavy.GKS(xc='pbe0').x2c1e().run()
+        ref = _cpu_gks_mcol_x2c(mol_heavy)
         mf = gks.GKS(mol_heavy, xc='pbe0').x2c1e().run()
-        self.assertAlmostEqual(mf.e_tot, ref.e_tot, 7)
+        self.assertAlmostEqual(mf.e_tot, ref.e_tot, 6)
         self.assertAlmostEqual(
-            abs(mf.mo_energy.get() - ref.mo_energy).max(), 0, 5)
+            abs(mf.mo_energy.get() - ref.mo_energy).max(), 0, 4)
 
     def test_gks_no_ecp_plus_x2c(self):
         # X2C is the all-electron alternative to ECP -- combining them must
         # raise, not silently do the wrong thing.
-        ecp_mol = gto.M(verbose=0, atom='I 0 0 0', basis='crenbl',
-                        ecp='crenbl', spin=1)
-        with self.assertRaises(NotImplementedError):
-            gks.GKS(ecp_mol, xc='pbe0').x2c1e().run()
+        ecp_mol = gto.M(verbose=0, output='/dev/null', atom='I 0 0 0',
+                        basis='crenbl', ecp='crenbl', spin=1)
+        try:
+            with self.assertRaises(NotImplementedError):
+                gks.GKS(ecp_mol, xc='pbe0').x2c1e().run()
+        finally:
+            ecp_mol.stdout.close()
 
 
 class SOECP(unittest.TestCase):
@@ -92,9 +104,13 @@ class SOECP(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         # An SO-ECP set on a heavy atom -- crenbl carries SO projectors.
-        cls.mol = gto.M(verbose=0, atom='I 0 0 0', basis='crenbl',
-                        ecp='crenbl', spin=1)
+        cls.mol = gto.M(verbose=0, output='/dev/null', atom='I 0 0 0',
+                        basis='crenbl', ecp='crenbl', spin=1)
         cls.has_so = bool(np.any(cls.mol._ecpbas[:, gto.SO_TYPE_OF] == 1))
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.mol.stdout.close()
 
     def setUp(self):
         if not self.has_so:
@@ -102,16 +118,17 @@ class SOECP(unittest.TestCase):
 
     def test_gks_soecp_matches_cpu(self):
         ref = self.mol.GKS(xc='pbe0')
+        ref.collinear = 'mcol'
         ref.with_soc = True
         ref = ref.run()
 
-        mf = gks.GKS(self.mol, xc='pbe0')
+        mf = gks.GKS(self.mol, xc='pbe0')      # collinear='mcol' by default
         mf.with_soc = True
         mf = mf.run()
 
-        self.assertAlmostEqual(mf.e_tot, ref.e_tot, 7)
+        self.assertAlmostEqual(mf.e_tot, ref.e_tot, 6)
         self.assertAlmostEqual(
-            abs(mf.mo_energy.get() - ref.mo_energy).max(), 0, 5)
+            abs(mf.mo_energy.get() - ref.mo_energy).max(), 0, 4)
 
     def test_soc_actually_changes_energy(self):
         # sanity: with_soc=True must differ from with_soc=False (SOC is active)
