@@ -125,6 +125,11 @@ class GKS(rks.KohnShamDFT, GHF):
         GHF.__init__(self, mol)
         rks.KohnShamDFT.__init__(self, xc)
         self._numint = numint2c.NumInt2C()
+        # gpu4pyscf's 2-component XC only implements the multi-collinear
+        # scheme (get_veff raises for anything else); default to it rather
+        # than the inherited 'col', which never works here.  Required for
+        # any spin-orbit (X2C or SO-ECP) GKS calculation.
+        self._numint.collinear = 'mcol'
 
     def dump_flags(self, verbose=None):
         GHF.dump_flags(self, verbose)

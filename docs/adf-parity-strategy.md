@@ -146,15 +146,86 @@ non-SOC ECP gradient infrastructure to extend. Lower accuracy ceiling than
 X2C for actinides, but much less new engineering. Could be phase A' in
 parallel with X2C work as the "good enough, ships sooner" path.
 
-## 3. Open questions for prioritization
+## 3. Prioritization answers (2026-09-04)
 
-- Is periodic work actually replacing ADF+BAND, or a separate need? Changes
-  whether phase C is in scope now.
-- Does the workflow need EPR/ESR (g/A/D-tensors)? Not started; would be new
-  scope on top of this roadmap.
-- Is ETS-NOCV / QTAIM-level bonding analysis load-bearing, or is the simpler
-  `properties/eda.py` enough?
-- Given X2C-SOC gradients are genuinely open-ended (may not exist in any GTO
-  code yet), is ECP-SOC-gradients-as-interim-solution + X2C-SOC-energies (no
-  gradients yet, single-point/spectroscopy use) an acceptable near-term
-  target, while X2C gradients are scoped separately?
+- Periodic is **separate materials work**, not replacing ADF+BAND — out of
+  scope for this roadmap. (The already-done PBC-ECP work stands on its own.)
+- EPR/ESR (g/A/D-tensors): **needed.**
+- Full ETS-NOCV / QTAIM: **needed** (the simpler `properties/eda.py` is not
+  enough).
+- Near-term target **accepted**: X2C-SOC energies only (no gradient yet) +
+  ECP-SOC gradients as the interim geometry-optimization path.
+
+## 4. Actinide + ligand-separation workflow — feature gap list
+
+Framing: solvated, often open-shell An(III/IV)–organic-extractant complexes
+(TODGA, CMPO, BTP/BTBP-type). Deliverables: binding free energies, An/Ln
+selectivity (ΔΔG), geometries, and covalency-based rationalization of the
+selectivity. "ECP level" = small-core or f-in-core relativistic ECP
+(Stuttgart RSC/MWB), the pragmatic route for 50–150-atom complexes (all-
+electron X2C is too expensive at that size).
+
+### 4.1 Usable today (scalar-relativistic ECP path)
+
+Covers the core of most computational separation studies:
+
+- UKS / ROKS with small-core or f-in-core RECP + the completed ECP
+  integrals/screening/gradients/Hessian from this project.
+- f-element SCF convergence aids: second-order SCF (`scf/soscf.py`,
+  `mf.newton()`), Fermi/Gaussian smearing (`scf/smearing.py`),
+  constrained-DFT + SOSCF (`dft/cdft_soscf.py`) for broken-symmetry /
+  charge-localized states.
+- Solvation: PCM + SMD, **with gradients and Hessian** (`solvent/grad`,
+  `solvent/hessian`) → solvated geometry optimization + frequencies.
+- Dispersion D3/D4 + gCP (`dispersion/`) — essential for second-sphere
+  ligand binding and BTP/BTBP π-stacking.
+- Thermochemistry: `pyscf.hessian.thermo` consumes the GPU Hessian (see
+  `drivers/dft_3c_driver.py`) → **ΔG of complexation, An/Ln ΔΔG selectivity**
+  — the primary deliverable.
+- ESP/RESP/CHELPG charges, NMR shielding, IR/Raman, TDDFT (no SOC).
+- SOC as a **single-point correction** on scalar-relativistic geometries
+  (GHF + SO-ECP energies; `gto/ecp.py:get_soc_1e`).
+
+Net: solvated ΔG / ΔΔG separation-energetics work can start now. SOC in the
+optimization loop and the ADF-style covalency analysis are the gaps.
+
+### 4.2 Tier 1 — blocks common workflows
+
+| Gap | Impact | Effort |
+|---|---|---|
+| **SOC-level gradients** (ECP or X2C) | no SOC in the geometry-opt loop or SOC-ΔG. Design in `docs/ghf-gradient-design.md`; not built. | medium–large; needs finite-difference validation on a non-collinear case |
+| **GKS + SO-ECP / GKS + X2C-SOC validation** | both believed to work via GKS-is-a-GHF inheritance (`dft/gks.py:GKS(rks.KohnShamDFT, GHF)`), untested — you'd be trusting unverified DFT+SOC energies. `test_gks_x2c_soc.py` (branch `soc-gradients`) is the first check. | small (test + minor fixes) |
+| **Hirshfeld / CM5 charges** | standard in the An/Ln separation literature; only ESP/RESP/CHELPG exist now. | small |
+
+### 4.3 Tier 2 — ADF-signature covalency toolkit (needed, per Sec 3)
+
+Separation *selectivity* is rationalized through An–L bond covalency
+(5f vs 4f differentiation) — ADF's analysis tools are what do this:
+
+| Gap | Notes |
+|---|---|
+| **ETS-NOCV** | fragment bond-energy decomposition (An³⁺ + ligand → complex) + NOCV deformation-density channels. The most-cited ADF analysis for f-element bonding. Only `properties/eda.py` (simpler) exists. Large new track. |
+| **QTAIM** | bond-critical-point properties, delocalization indices at An–L bonds. Missing. Large new track (real-space density topology). |
+| **Mayer / Wiberg bond orders** | not found in gpu4pyscf. Small. |
+| **NBO / NPA** | external (NBO6/7); PySCF can write the interface file — usable now, not GPU/integrated. |
+
+### 4.4 Tier 3 — advanced / situational
+
+| Gap | Relevant if… |
+|---|---|
+| **EPR/ESR (g/A/D-tensor)** | paramagnetic An(III/IV) EPR is in the workflow. Not implemented anywhere in gpu4pyscf (nor this PySCF checkout's `pyscf.prop`). Large new track. |
+| **SOC-TDDFT** | f–f / LMCT transitions with spin-orbit (UV-vis, luminescence). TDDFT exists, not with SOC. |
+| **X2C actinide basis sets** | going all-electron X2C instead of ECP — SARC-DKH2 covers Z=90–103; `x2c-*` family coverage spottier. Non-issue for the ECP route. |
+| **Multireference (CASSCF / NEVPT2)** | genuinely multiconfigurational An states (some U(IV)/U(V), bridged multi-metal). Scoped out (GKS+SOC deemed sufficient); CASSCF is CPU-only in PySCF, not GPU-accelerated here. |
+
+### 4.5 Recommended order for separation-chemistry readiness
+
+1. Validate GKS+X2C-SOC and GKS+SO-ECP energies (`soc-gradients` branch) —
+   cheap, unblocks trustworthy DFT+SOC single points.
+2. Hirshfeld/CM5 charges — small, immediately useful for An/Ln analysis.
+3. GHF/GKS + SO-ECP gradients (`docs/ghf-gradient-design.md`) — enables SOC
+   geometry optimization and SOC-ΔG.
+4. ETS-NOCV — the highest-value bonding-analysis gap for selectivity
+   rationalization.
+5. QTAIM.
+6. EPR/ESR, SOC-TDDFT — as the specific spectroscopy needs arise.
