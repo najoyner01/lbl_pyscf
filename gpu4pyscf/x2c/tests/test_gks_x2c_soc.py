@@ -31,6 +31,15 @@ import pyscf
 from pyscf import gto, lib
 from gpu4pyscf.dft import gks
 
+# CPU PySCF's multi-collinear GKS XC needs the `mcfun` package (pip install
+# mcfun); the GPU side uses gpu4pyscf/dft/mcfun_gpu.py and does not.  The CPU
+# cross-check tests skip without it -- the GPU-only tests still run.
+try:
+    import mcfun  # noqa: F401
+    _HAS_MCFUN = True
+except ImportError:
+    _HAS_MCFUN = False
+
 
 def setUpModule():
     global mol, mol_heavy
@@ -62,6 +71,7 @@ def _cpu_gks_mcol_x2c(m, xc='pbe0'):
 
 
 class KnownValues(unittest.TestCase):
+    @unittest.skipUnless(_HAS_MCFUN, 'CPU mcol GKS needs `pip install mcfun`')
     def test_gks_x2c_soc_matches_cpu(self):
         ref = _cpu_gks_mcol_x2c(mol)
         mf = gks.GKS(mol, xc='pbe0').x2c1e().run()      # collinear='mcol' by default
@@ -78,6 +88,7 @@ class KnownValues(unittest.TestCase):
         x2c_mf = mf.x2c1e()
         self.assertTrue(hasattr(x2c_mf, 'with_x2c'))
 
+    @unittest.skipUnless(_HAS_MCFUN, 'CPU mcol GKS needs `pip install mcfun`')
     def test_gks_x2c_soc_heavy_atom(self):
         # exercise real (non-epsilon) spin-orbit splitting on a heavy atom
         ref = _cpu_gks_mcol_x2c(mol_heavy)
@@ -116,6 +127,7 @@ class SOECP(unittest.TestCase):
         if not self.has_so:
             self.skipTest('crenbl I has no SO-ECP projectors in this build')
 
+    @unittest.skipUnless(_HAS_MCFUN, 'CPU mcol GKS needs `pip install mcfun`')
     def test_gks_soecp_matches_cpu(self):
         ref = self.mol.GKS(xc='pbe0')
         ref.collinear = 'mcol'
@@ -131,12 +143,20 @@ class SOECP(unittest.TestCase):
             abs(mf.mo_energy.get() - ref.mo_energy).max(), 0, 4)
 
     def test_soc_actually_changes_energy(self):
-        # sanity: with_soc=True must differ from with_soc=False (SOC is active)
+        # GPU-only: with_soc=True must differ from with_soc=False (SOC is active)
         no_soc = gks.GKS(self.mol, xc='pbe0').run().e_tot
         mf = gks.GKS(self.mol, xc='pbe0')
         mf.with_soc = True
         with_soc = mf.run().e_tot
         self.assertGreater(abs(with_soc - no_soc), 1e-6)
+
+    def test_soecp_gpu_scf_converges(self):
+        # GPU-only: GKS + SO-ECP SCF runs to convergence and gives finite MOs
+        mf = gks.GKS(self.mol, xc='pbe0')
+        mf.with_soc = True
+        mf = mf.run()
+        self.assertTrue(mf.converged)
+        self.assertTrue(np.isfinite(mf.mo_energy.get()).all())
 
 
 if __name__ == '__main__':
