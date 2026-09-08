@@ -33,8 +33,8 @@ both molecular and periodic (`gpu4pyscf/pbc/`).
 |---|---|
 | DFT (LDA/GGA/meta-GGA/hybrid/range-separated) | ✅ `dft/` — full libxc coverage, RKS/UKS/GKS, PBC RKS/UKS |
 | Scalar-relativistic ECP | ✅ done this project (screening, grad, Hessian, molecular + PBC) |
-| Spin-orbit ECP | ✅ done this project (molecular + PBC energies); **no gradients yet** |
-| Spin-orbit X2C | ⚠️ **partial** — `x2c/x2c.py:SpinOrbitalX2CHelper` wired to **GHF only** (energy); not wired to GKS/DFT; no gradients; PBC X2C exists (`pbc/x2c/x2c1e.py`) but scalar-only, not checked for SOC |
+| Spin-orbit ECP | ✅ done this project (molecular + PBC energies); GKS+SO-ECP energies validated 2026-09-08 (`test_gks_x2c_soc.py`); **no gradients yet** |
+| Spin-orbit X2C | ⚠️ **partial** — `x2c/x2c.py:SpinOrbitalX2CHelper` energies validated at **GHF and GKS** (molecular, 2026-09-08); no gradients; PBC X2C exists (`pbc/x2c/x2c1e.py`) but scalar-only, not checked for SOC |
 | Geometry optimization / TS search | ✅ geomeTRIC (molecular), ASE-based cell optimizer (PBC) |
 | Frequencies (Hessian) | ✅ `hessian/` — RHF/UHF/RKS/UKS, molecular; PBC coverage partial |
 | TDDFT / excited states | ✅ `tdscf/` incl. a RIS (reduced-scaling) variant, spin-flip |
@@ -194,7 +194,7 @@ optimization loop and the ADF-style covalency analysis are the gaps.
 | Gap | Impact | Effort |
 |---|---|---|
 | **SOC-level gradients** (ECP or X2C) | no SOC in the geometry-opt loop or SOC-ΔG. Design in `docs/ghf-gradient-design.md`; not built. | medium–large; needs finite-difference validation on a non-collinear case |
-| **GKS + SO-ECP / GKS + X2C-SOC validation** | both believed to work via GKS-is-a-GHF inheritance (`dft/gks.py:GKS(rks.KohnShamDFT, GHF)`), untested — you'd be trusting unverified DFT+SOC energies. `test_gks_x2c_soc.py` (branch `soc-gradients`) is the first check. | small (test + minor fixes) |
+| ~~**GKS + SO-ECP / GKS + X2C-SOC validation**~~ | ✅ **DONE 2026-09-08.** Both routes validated vs CPU PySCF on A100 — `x2c/tests/test_gks_x2c_soc.py`, 7/7 (H₂O/cc-pvdz + I heavy-atom; `e_tot` to 1e-6–1e-7, `mo_energy` to 1e-4–1e-5). Confirmed the GKS-is-a-GHF inheritance path needs no GKS-specific SOC code. Bonus fix: `dft/gks.py:GKS.__init__` now defaults `collinear='mcol'` (the only 2-component XC scheme gpu4pyscf implements; plain `'col'` always raised). CPU cross-checks need `pip install mcfun`; the GPU path does not. | ~~small~~ done |
 | **Hirshfeld / CM5 charges** | standard in the An/Ln separation literature; only ESP/RESP/CHELPG exist now. | small |
 
 ### 4.3 Tier 2 — ADF-signature covalency toolkit (needed, per Sec 3)
@@ -220,8 +220,8 @@ Separation *selectivity* is rationalized through An–L bond covalency
 
 ### 4.5 Recommended order for separation-chemistry readiness
 
-1. Validate GKS+X2C-SOC and GKS+SO-ECP energies (`soc-gradients` branch) —
-   cheap, unblocks trustworthy DFT+SOC single points.
+1. ~~Validate GKS+X2C-SOC and GKS+SO-ECP energies~~ — ✅ DONE 2026-09-08
+   (merged to `gpu-porting`). Trustworthy DFT+SOC single points now unblocked.
 2. Hirshfeld/CM5 charges — small, immediately useful for An/Ln analysis.
 3. GHF/GKS + SO-ECP gradients (`docs/ghf-gradient-design.md`) — enables SOC
    geometry optimization and SOC-ΔG.
