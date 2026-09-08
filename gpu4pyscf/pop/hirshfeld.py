@@ -65,10 +65,12 @@ _RAD_RMAX = 30.0      # Bohr; density is numerically zero well before this
 _RHO_FLOOR = 1e-300
 
 
-def _free_atom_radial_density(symb, mol):
+def _free_atom_radial_density(symb, mol, nelec_core=0):
     '''Spherically averaged neutral free-atom density rho_A^0(r) on a 1-D log
     radial grid (Bohr).  Returns (r_grid, rho_grid), both numpy, using the
-    basis (and ECP, if any) that ``mol`` assigns to element ``symb``.'''
+    basis (and ECP, if any) that ``mol`` assigns to element ``symb``.
+    ``nelec_core`` is the number of electrons the ECP removes for this element
+    (0 for all-electron), needed to pick a consistent spin before build.'''
     pure = gto.mole._std_symbol(symb)
     try:
         bas = mol._basis[symb]
@@ -81,10 +83,12 @@ def _free_atom_radial_density(symb, mol):
     if ecp is not None:
         atm.ecp = {pure: ecp}
     atm.charge = 0
+    # spin must be consistent with the (ECP-reduced) electron count *before*
+    # build(); the spherical-average SCF only uses it to pick fractional occ.
+    atm.spin = (gto.charge(pure) - nelec_core) % 2
     atm.cart = False          # atom_hf.AtomSphAverageRHF is spherical only
     atm.verbose = 0
     atm.build()
-    atm.spin = atm.nelectron % 2
 
     res = atom_hf.get_atm_nrhf(atm)          # {pure: (e_tot, mo_e, mo_coeff, mo_occ)}
     _, _, mo_coeff, mo_occ = res[pure]
@@ -115,7 +119,8 @@ def _promol_weights(mol, coords, log=None):
     for ia in range(natm):
         symb = mol.atom_symbol(ia)
         if symb not in ref_cache:
-            r_np, rho_np = _free_atom_radial_density(symb, mol)
+            r_np, rho_np = _free_atom_radial_density(
+                symb, mol, nelec_core=mol.atom_nelec_core(ia))
             ref_cache[symb] = (cp.asarray(np.log(r_np)),
                                cp.asarray(np.log(rho_np)))
             if log is not None:

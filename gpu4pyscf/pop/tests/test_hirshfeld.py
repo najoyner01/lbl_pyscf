@@ -84,7 +84,7 @@ class KnownValues(unittest.TestCase):
     def test_hirshfeld_ecp_sum_rule_and_polarity(self):
         # small-core def2 ECP on iodine (28e core)
         m = gto.M(atom='I 0 0 0; H 0 0 1.609', basis='def2-svp',
-                  ecp='def2-svp', verbose=0, output='/dev/null')
+                  ecp={'I': 'def2-svp'}, verbose=0, output='/dev/null')
         mf = dft.RKS(m, xc='pbe0').run()
         q = hirshfeld.hirshfeld_charges(m, mf.make_rdm1()).get()
         self.assertAlmostEqual(q.sum(), 0.0, 3)
@@ -126,9 +126,11 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(hirshfeld._cm5_pair_T(6, 1), -0.0502, 12)
         self.assertAlmostEqual(hirshfeld._cm5_pair_T(8, 1), -0.1671, 12)
         self.assertAlmostEqual(hirshfeld._cm5_pair_T(7, 8), -0.0346, 12)
-        # general pair: D_Z difference
-        self.assertAlmostEqual(hirshfeld._cm5_pair_T(6, 8),
-                               hirshfeld._CM5_D[6] - hirshfeld._CM5_D[8], 12)
+        # general (non-special) pair: plain D_Z difference, antisymmetric
+        self.assertAlmostEqual(hirshfeld._cm5_pair_T(6, 9),
+                               hirshfeld._CM5_D[6] - hirshfeld._CM5_D[9], 12)
+        self.assertAlmostEqual(hirshfeld._cm5_pair_T(9, 6),
+                               hirshfeld._CM5_D[9] - hirshfeld._CM5_D[6], 12)
         self.assertAlmostEqual(hirshfeld._cm5_pair_T(9, 9), 0.0, 12)
 
     def test_grid_level_converged(self):
