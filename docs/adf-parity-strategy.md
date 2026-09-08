@@ -193,9 +193,9 @@ optimization loop and the ADF-style covalency analysis are the gaps.
 
 | Gap | Impact | Effort |
 |---|---|---|
-| **SOC-level gradients** (ECP or X2C) | no SOC in the geometry-opt loop or SOC-ΔG. Design in `docs/ghf-gradient-design.md`; not built. | medium–large; needs finite-difference validation on a non-collinear case |
+| **SOC-level gradients** (ECP or X2C) | no SOC in the geometry-opt loop or SOC-ΔG. Design in `docs/ghf-gradient-design.md`; not built. **The one remaining Tier-1 blocker.** | medium–large; needs finite-difference validation on a non-collinear case |
+| ~~**Hirshfeld / CM5 charges**~~ | ✅ **DONE 2026-09-08.** `gpu4pyscf/pop/hirshfeld.py` — `hirshfeld_charges` / `cm5_charges`, ECP-consistent, handles RHF/UHF/GHF incl. SO-ECP densities. A100: 10/10 (Σq sum rule incl. GKS+SO-ECP; water on literature ranges; CM5 antisymmetry). No CPU PySCF reference existed. | ~~small~~ done |
 | ~~**GKS + SO-ECP / GKS + X2C-SOC validation**~~ | ✅ **DONE 2026-09-08.** Both routes validated vs CPU PySCF on A100 — `x2c/tests/test_gks_x2c_soc.py`, 7/7 (H₂O/cc-pvdz + I heavy-atom; `e_tot` to 1e-6–1e-7, `mo_energy` to 1e-4–1e-5). Confirmed the GKS-is-a-GHF inheritance path needs no GKS-specific SOC code. Bonus fix: `dft/gks.py:GKS.__init__` now defaults `collinear='mcol'` (the only 2-component XC scheme gpu4pyscf implements; plain `'col'` always raised). CPU cross-checks need `pip install mcfun`; the GPU path does not. | ~~small~~ done |
-| **Hirshfeld / CM5 charges** | standard in the An/Ln separation literature; only ESP/RESP/CHELPG exist now. | small |
 
 ### 4.3 Tier 2 — ADF-signature covalency toolkit (needed, per Sec 3)
 
@@ -222,9 +222,10 @@ Separation *selectivity* is rationalized through An–L bond covalency
 
 1. ~~Validate GKS+X2C-SOC and GKS+SO-ECP energies~~ — ✅ DONE 2026-09-08
    (merged to `gpu-porting`). Trustworthy DFT+SOC single points now unblocked.
-2. Hirshfeld/CM5 charges — small, immediately useful for An/Ln analysis.
+2. ~~Hirshfeld/CM5 charges~~ — ✅ DONE 2026-09-08 (`gpu4pyscf/pop/hirshfeld.py`,
+   merged to `gpu-porting`).
 3. GHF/GKS + SO-ECP gradients (`docs/ghf-gradient-design.md`) — enables SOC
-   geometry optimization and SOC-ΔG.
+   geometry optimization and SOC-ΔG. **← the only Tier-1 item left.**
 4. ETS-NOCV — the highest-value bonding-analysis gap for selectivity
    rationalization.
 5. QTAIM.
