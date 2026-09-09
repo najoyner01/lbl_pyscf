@@ -507,8 +507,8 @@ Captured A100 run: `hessian/tests/results/fd_hessian_A100.md`.
 The V3 HI GKS(pbe0)+SOC stretch came out **2253 cm⁻¹** in the captured run vs
 **≈2430 cm⁻¹** on an earlier draw. Two convergence studies settle it:
 
-- **Closed-shell** (`hessian/tests/results/spin_samples_convergence.md`, driver
-  `spin_samples_study.py`). At a *fixed* HI geometry the FD stretch is
+- **Closed-shell** (`hessian/tests/results/spin_samples_convergence.md`;
+  transcribed run record, driver not committed). At a *fixed* HI geometry the FD stretch is
   **2252.43 cm⁻¹ independent of `spin_samples`** (50 → 1202 flat to < 1e-6
   cm⁻¹), independent of `grids.level` (3 → 5: 0.004 cm⁻¹) and of
   `grid_response` (on/off: 0). The converged HI density is collinear
