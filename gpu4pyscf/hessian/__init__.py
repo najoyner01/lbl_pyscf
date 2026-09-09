@@ -19,3 +19,4 @@ from gpu4pyscf.hessian import rhf, uhf
 from gpu4pyscf.hessian.rhf import Hessian as RHF
 from gpu4pyscf.hessian import rks, uks
 from gpu4pyscf.hessian import dispersion
+from gpu4pyscf.hessian import fd  # finite-difference GHF/GKS Hessian (grafts GHF.Hessian)

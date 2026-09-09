@@ -250,6 +250,20 @@ Separation *selectivity* is rationalized through An–L bond covalency
    PCM & SMD: `‖ana−FD‖ ≲ 3e-8`); collinear reduction to UHF/UKS+PCM exact
    (`‖Δ‖ < 1e-12`); solvated GKS+SOC geometry optimization of HI converges.
    ΔG_solv(HI) = −2.2 kcal/mol. Tests: `solvent/tests/test_pcm_soc.py`.
+3d. ~~Vibrational frequencies + thermochemistry for spin-orbit DFT~~ —
+   ✅ DONE 2026-09-09 (`docs/ghf-gradient-design.md` §5.6).
+   `gpu4pyscf/hessian/fd.py` — a **finite-difference** nuclear Hessian for
+   GHF / GKS (central differences over the analytic SOC gradient scanner;
+   `with_soc=True` and `.PCM()` / `.SMD()` ride along).  `mf.Hessian().kernel()`
+   returns the `(natm,natm,3,3)` layout `pyscf.hessian.thermo` consumes, so
+   `harmonic_analysis` / `thermo` (ZPE, H, S, G) work.  **Cost O(6N)
+   re-converged SCF+gradient evaluations — small systems only**; an analytic
+   2-component/SOC Hessian is future work.  FD-validated: reduces to the
+   analytic UHF/UKS Hessian for a real block-diagonal solution
+   (`‖ΔH‖/‖H‖ ≈ 2e-6`); HI/CRENBL+SOC → 5 near-zero modes + a physical stretch;
+   solvated `G_tot` finite.  Tests: `hessian/tests/test_fd_hessian.py`.
+   → the solvated-SOC ΔG workflow is now implementation-complete for small
+   molecules.
 4. ETS-NOCV — the highest-value bonding-analysis gap for selectivity
    rationalization.
 5. QTAIM.

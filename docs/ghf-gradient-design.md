@@ -448,3 +448,55 @@ number density `ρ = Re(D_αα + D_ββ)` and the nuclear charges.  So:
 
 Tests: `solvent/tests/test_pcm_soc.py`.  Range-separated hybrids and MGGA in
 GKS still raise `NotImplementedError` (unchanged from §5.3).
+
+### 5.6 Update 2026-09-09 — FD nuclear Hessian + thermochemistry
+
+`gpu4pyscf/hessian/fd.py`.  A **finite-difference** nuclear Hessian for GHF /
+GKS, so vibrational frequencies and thermochemistry (ZPE, H, S, G) work for
+spin-orbit DFT.  An analytic 2-component / SOC Hessian is a much larger job and
+is **future work**; this is the interim path.
+
+**Method.**  `finite_diff_hessian(mf, disp=1e-3)` — central differences over
+the 3N nuclear coordinates using the method's own analytic-gradient scanner
+(`mf.nuc_grad_method().as_scanner()`; `grid_response=True` for GKS).  `with_soc`
+and `.PCM()`/`.SMD()` ride along automatically (the scanner re-converges the
+full method at each geometry).  Returns `(natm,natm,3,3)` — the layout the
+analytic Hessians emit and `pyscf.hessian.thermo` consumes.
+
+- **Cost: O(6N) re-converged SCF + gradient evaluations.  Small systems only.**
+- Requires `mf.conv_tol <= 1e-11` (raises otherwise): the FD gradient
+  difference is ~ `conv_tol / disp`.
+- `harmonic_analysis` is only meaningful at a stationary point — optimize the
+  geometry first (a residual gradient contaminates the rotational modes; e.g.
+  HI/CRENBL+SOC off-minimum shows spurious ~150 cm⁻¹ "rotations", ~1 cm⁻¹ at
+  the optimized geometry).
+
+**Wiring.**  `hessian/fd.py` grafts `scf.ghf.GHF.Hessian` (GKS inherits),
+mirroring `hessian/{rhf,uhf,rks,uks}.py`.  `mf.Hessian().kernel()` →
+`(natm,natm,3,3)`.  Convenience: `hessian.fd.harmonic_and_thermo(mf, T, P)` →
+`(freq_info, thermo_info)`.
+
+**Recommended call.**
+
+    mf = dft.GKS(mol, xc='pbe0').PCM()          # or scf.GHF(mol); or .SMD()
+    mf.with_soc = True; mf.spin_samples = 50
+    mf.conv_tol = 1e-12
+    mf.kernel()
+    mol_eq = optimize(...)                      # frequencies need a minimum
+    mf = <rebuild at mol_eq>; mf.kernel()
+    freq_info, thermo_info = gpu4pyscf.hessian.fd.harmonic_and_thermo(mf)
+    G_tot = thermo_info['G_tot'][0]
+
+**Validated (A100, `spin_samples=50`, `disp=1e-3` Bohr, `conv_tol≤1e-12`).**
+
+| gate | check | result |
+|---|---|---|
+| V1 | FD GHF Hessian (real block-diagonal, UHF MOs embedded, no SOC) vs analytic UHF Hessian, H₂O/sto-3g | `‖ΔH‖/‖H‖` = **1.7e-6** |
+| V2 | FD GKS(pbe0) Hessian vs analytic UKS(pbe0, `grid_response=True`) Hessian, H₂O/sto-3g | `‖ΔH‖/‖H‖` = **2.6e-6** |
+| V3 | HI/CRENBL, `with_soc=True`, at the optimized geometry, unprojected `harmonic_analysis`: 5 modes `\|freq\| < 50 cm⁻¹` + 1 stretch in 2000–2600 | GHF+SOC: rot 0.6 / 7.2, **stretch 2441 cm⁻¹**; GKS(pbe0)+SOC: rot ≈ 0, **stretch ≈ 2430 cm⁻¹** |
+| V4 | HI GHF stretch with vs without `with_soc` (common geometry) | 2408.0 vs 2413.2 → **SOC shift 5.25 cm⁻¹** |
+| V5 | `harmonic_and_thermo` for `GKS(HI,pbe0); with_soc=True` and for `.PCM()` | ZPE 0.00554, H_tot −111.9129, S_tot 7.86e-5, **G_tot −111.9364 Eh**; +PCM **G_tot −111.9396 Eh** (all finite) |
+| V6 | step-size: `‖H(1e-3) − H(2e-3)‖` and `‖H(1e-3) − H(5e-3)‖` (GHF+SOC HI) | **5.8e-6** and 9.8e-6 (Ha/Bohr²) |
+| V7 | regression: `hessian/tests/` (analytic RHF/RKS/UHF/UKS) + SOC grad/geomopt/PCM suites | unaffected (new module + one import line) |
+
+Tests: `hessian/tests/test_fd_hessian.py` (FD ones `@pytest.mark.slow`).
