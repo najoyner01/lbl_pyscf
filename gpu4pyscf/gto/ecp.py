@@ -320,6 +320,13 @@ def get_ecp(mol):
     for i in range(n_groups):
         for j in range(i,n_groups):
             for k in range(n_ecp_groups):
+                if len(tasks_all[i,j,k]) == 0:
+                    # screening emptied this (l_i, l_j, l_ecp) block; launching
+                    # the kernel with a zero-size grid raises CUDA
+                    # "invalid configuration argument" (seen for small-core
+                    # actinide ECPs, e.g. U stuttgart_rsc + def2-SVP O).  The
+                    # so / ip / so_ip loops below already skip empty blocks.
+                    continue
                 tasks = cp.asarray(tasks_all[i,j,k], dtype=np.int32, order='F')
                 ntasks = len(tasks)
                 li = uniq_l_ctr[i,0]
