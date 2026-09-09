@@ -267,6 +267,10 @@ class GHF(hf.SCF):
         utils.to_cpu(self, out=mf)
         return mf
 
+    def Gradients(self):
+        from gpu4pyscf.grad import ghf as ghf_grad
+        return ghf_grad.Gradients(self)
+
     def x2c1e(self):
         from gpu4pyscf.x2c.x2c import x2c1e_ghf
         return x2c1e_ghf(self)
