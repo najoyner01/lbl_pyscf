@@ -137,6 +137,109 @@ class KnownValues(unittest.TestCase):
         self.assertAlmostEqual(abs(a - b).max(), 0, 10)
 
 
+@unittest.skipUnless(getattr(ecp, '_HAS_SO_IP', False),
+                     'libgecp built without ECP_so_ip_cart')
+class SoIpFiniteDifference(unittest.TestCase):
+    '''V1 of docs/ghf-gradient-design.md step 3: the bra-derivative SO-ECP
+    integral (get_ecp_so_ip / loop_ecp_so_ip) assembled per atom must match a
+    central finite difference of the energy integral get_ecp_so itself.
+
+    There is no CPU reference (pyscf registers ECPso but no ECPso_ip), so this
+    self-contained integral-level check is the primary correctness gate for the
+    kernel -- it isolates sign / factor / layout errors with no SCF involved.
+    '''
+
+    def _assemble_analytic(self, m):
+        '''d/dR_A get_ecp_so(m)[a]  ->  [natm, 3(a), 3(xyz), nao, nao].
+
+        For a matrix element <i| l_a U_SO |j> (i = bra, j = ket):
+            d/dR_A = -Gsum[a,x,i,j]           (bra AO i centred on A)
+                     +Gsum[a,x,j,i]           (ket AO j centred on A)
+                     +(G^A - G^A.T)[a,x,i,j]  (A is the SO-ECP centre;
+                                               translational invariance)
+        with G[a,x,r,s] = <d/dr_x r | l_a U_SO | s>, Gsum summed over all
+        SO-ECP centres and G^A restricted to centre A.
+        '''
+        import cupy as cp
+        natm, nao = m.natm, m.nao
+        so_atoms = ecp._default_ecp_so_atoms(m)
+        Gc = {}
+        Gsum = cp.zeros([3, 3, nao, nao])
+        for batch, G in ecp.loop_ecp_so_ip(m, ecp_atoms=so_atoms):
+            for r, C in enumerate(batch):
+                Gc[int(C)] = cp.asnumpy(G[r])
+                Gsum += G[r]
+        Gsum = cp.asnumpy(Gsum)
+        GsumT = np.swapaxes(Gsum, -1, -2)
+
+        aoslices = m.aoslice_by_atom()
+        ao_atom = np.empty(nao, dtype=int)
+        for A in range(natm):
+            ao_atom[aoslices[A, 2]:aoslices[A, 3]] = A
+
+        dso = np.zeros([natm, 3, 3, nao, nao])
+        for A in range(natm):
+            mask = ao_atom == A
+            dso[A][:, :, mask, :] += -Gsum[:, :, mask, :]
+            dso[A][:, :, :, mask] += GsumT[:, :, :, mask]
+            if A in Gc:
+                g = Gc[A]
+                dso[A] += g - np.swapaxes(g, -1, -2)
+        return dso
+
+    def _fd(self, build, h=1e-4):
+        import cupy as cp
+        m = build()
+        natm, nao = m.natm, m.nao
+        coords0 = m.atom_coords()
+        dso = np.zeros([natm, 3, 3, nao, nao])
+        for A in range(natm):
+            for x in range(3):
+                cp_, cm_ = coords0.copy(), coords0.copy()
+                cp_[A, x] += h
+                cm_[A, x] -= h
+                mp = build().set_geom_(cp_, unit='Bohr', inplace=False)
+                mp.build(False, False)
+                mm = build().set_geom_(cm_, unit='Bohr', inplace=False)
+                mm.build(False, False)
+                dso[A, :, x] = (cp.asnumpy(ecp.get_ecp_so(mp))
+                                - cp.asnumpy(ecp.get_ecp_so(mm))) / (2 * h)
+        return dso
+
+    def _check(self, build):
+        an = self._assemble_analytic(build())
+        fd = self._fd(build)
+        err = float(np.linalg.norm((an - fd).ravel()))
+        self.assertLess(err, 1e-6)
+
+    def test_fd_ul_projector(self):
+        # Pb/CRENBL: SO term is the `ul` (lc == -1 -> lmax+1) projector
+        self._check(lambda: gto.M(
+            atom='Pb 0 0 0; O 0 0 2.1', basis='crenbl', ecp='crenbl',
+            spin=0, unit='Bohr', verbose=0, output='/dev/null'))
+
+    def test_fd_explicit_projectors(self):
+        # K/ecpds10mdfso: explicit SO projectors, lc = 0..3
+        kbas = gto.basis.parse('''
+K    S
+      3.0        1.0
+      0.8        1.0
+K    P
+      2.5        1.0
+      0.5        1.0
+K    D
+      1.0        1.0
+K    F
+      1.2        1.0
+K    G
+      1.1        1.0
+''')
+        self._check(lambda: gto.M(
+            atom='K 0 0 0; F 0 0 4.0', basis={'K': kbas, 'F': kbas},
+            ecp={'K': 'ecpds10mdfso'}, spin=0, unit='Bohr', verbose=0,
+            output='/dev/null'))
+
+
 if __name__ == '__main__':
     print('Tests for spin-orbit ECP')
     unittest.main()

@@ -10,16 +10,21 @@ Validation to date (A100, `grad/tests/test_ghf_grad.py`):
 - **(b) done** — GHF analytic vs finite difference, OH/sto-3g spin=1 (no SOC,
   `D_αα ≠ D_ββ`, real): `||Δ|| = 1.7e-8`. (Original plan named HI/crenbl; that
   has an even valence-electron closed shell, swapped for OH.)
-- **(c) done** 2026-09-08 — spin-rotation invariance
-  (`test_ghf_spin_rotation_invariance`): global `R_x(θ)`, θ ∈ {0.3, 1.0, 2.0},
-  activates the imaginary-diagonal (`k_factor=-2`) and `D_αβ` cross
-  (`k_factor=+4`) paths, `||g_rot − g_0|| < 1e-8` at every angle. Those two
-  `k_factor`s are now confirmed. The GHF/GKS gradient is validated for scalar
-  **and** non-collinear real-space densities. `grad/ghf.py` still emits a
-  `logger.warn` on non-negligible `Y`/`D_αβ` blocks as a belt-and-braces flag
-  until a true `with_soc=True` FD check exists.
-- **SOC hcore path** (`d ECPso/dR`): raises `NotImplementedError` — needs the
-  step-3 SO-ECP gradient integral (`lib/ecp/ecp_so.cu` IP kernel), not built.
+- **(c) pending run** — spin-rotation invariance test added
+  (`test_ghf_spin_rotation_invariance`): a global SU(2) rotation of the
+  converged solution activates the imaginary-diagonal (`k_factor=-2`) and
+  `D_αβ` cross (`k_factor=+4`) paths, which (a)/(b) leave at zero. **Until this
+  passes, those two paths — hence every complex/non-collinear/SOC GHF
+  gradient — are unvalidated.** `grad/ghf.py` emits a `logger.warn` when the
+  density has non-negligible `Y`/`D_αβ` blocks.
+- **SOC hcore path** (`d ECPso/dR`): **done (2026-09-08)** — new bra-derivative
+  kernel `ECP_so_ip_cart` (`lib/ecp/ecp_so_ip.cu`), Python
+  `gpu4pyscf.gto.ecp.{loop_ecp_so_ip,get_ecp_so_ip}`, wired into
+  `grad/ghf.py:_soc_hcore_grad`. Validated (A100): integral-level FD
+  (`test_ecp_so.py::SoIpFiniteDifference`, `‖Δ‖ ≲ 5e-11`) and end-to-end
+  `with_soc=True` FD (`test_ghf_grad.py::TestGHFGradSOC`: HI/CRENBL spin=0,
+  `|D_αβ|~3e-2`, `‖analytic−FD‖ = 2.6e-9`; single I atom, gradient vanishes to
+  `2e-28`). See §5.2.
 
 Implementation note that diverged from this doc: the multi-dm kernel
 (`RYS_per_atom_jk_ip1_multidm`) normalizes per pair differently from the
@@ -247,17 +252,53 @@ invariance** (`test_ghf_spin_rotation_invariance`). Rotating the converged
 solution by a global `R_x(θ)` is an exact symmetry of the spin-free
 Hamiltonian, so the analytic gradient must not move; but the rotation shifts
 density weight into `Y_aa/Y_bb/A_ab/B_ab`, so a wrong `k_factor` on those pairs
-makes `g_rot` drift from `g_0`. **Passed 2026-09-08** (`< 1e-8` at θ = 0.3,
-1.0, 2.0). A genuine `with_soc=True` finite-difference check still comes
-later, with step 3 (the `d ECPso/dR` integral).
+makes `g_rot` drift from `g_0`. Run it on the next GPU session. A genuine
+`with_soc=True` finite-difference check still comes later, with step 3.
 
-### Step 3 — SO-ECP hcore gradient integral (the last piece)
+### 5.2 Update 2026-09-08 — step 3 (SO-ECP gradient integral) landed
 
-`grad/ghf.py:grad_elec` raises `NotImplementedError` when `mf.with_soc` is
-set: the `⟨i| dU_SO/dR |j⟩` term is missing. This needs an `ip`-type kernel
-alongside the existing `so_cart` in `lib/ecp/ecp_so.cu` — the SO analog of
-`get_ecp_ip` / `loop_ecp_ip` from the scalar ECP gradient work
-([[ecp-gpu-status]]). Once it exists, wire it into `grad_elec` (add to the
-`e1_grad` term, same place scalar `get_ecp_ip` feeds `grad/rhf.py`), drop the
-`NotImplementedError`, and add the `with_soc=True` OH/heavy-atom FD test.
-That completes SOC-in-the-optimization-loop.
+**Kernel.** `gpu4pyscf/lib/ecp/ecp_so_ip.cu`, `so_cart_ip1_general` (driver
+`ECP_so_ip_cart` in `nr_ecp_driver.cu`). It is `so_cart` (energy SO-ECP) with
+the bra-derivative recursion of `type2_cart_ip1` grafted on: evaluate the
+L^a-transformed type-2 block once with the bra angular momentum raised
+(`LI+1`, radial order 1) and once lowered (`LI-1`, order 0), then map back with
+`_li_down`/`_li_up`. Same radial prefactor as scalar type-2 (no ½). The ket
+projector still carries the real antisymmetric `L^a` transform
+(`transform_omega_lop`). Output `[n_ecp_atm, 3(a), 3(x), nao, nao]`, real,
+bra = row. The bra derivative breaks the `(i,j)` antisymmetry `so_cart`
+exploits, so the driver feeds a **full (non-triangular)** task list and the
+kernel writes **no transpose block** — exactly like `get_ecp_ip`.
+
+**Python.** `gpu4pyscf.gto.ecp.loop_ecp_so_ip(mol, ecp_atoms=…, batch_size=…)`
+yields `(atom_ids, G)` with `G[c,a,x,r,s] = <∂_x r | l_a U_SO | s>` for SO-ECP
+centre `atom_ids[c]`; `get_ecp_so_ip(mol)` sums over centres →
+`[3(a), 3(x), nao, nao]`. Reuses `_EcpDerivContext` + `sort_ecp_basis_so`.
+
+**Wire-in.** `grad/ghf.py:_soc_hcore_grad(mol, dm_ghf)`. The SOC energy in the
+nao×nao spin blocks is `E_soc = ½ Σ_a Tr[W_a · ECPso_a]` with the real
+antisymmetric `W_a = Im(Σ_{xy} pauli[a,y,x] D_{xy})`:
+
+    W_x = Im(D_αβ) − Im(D_αβ)ᵀ
+    W_y = Re(D_αβ) − Re(D_αβ)ᵀ
+    W_z = Im(D_αα) − Im(D_ββ)
+
+`dE_soc/dR_A = ½ Σ_a Tr[W_a · dECPso_a/dR_A]`, and `dECPso_a/dR_A` assembles
+from `G` with the same bra/ket/ECP-centre (translational-invariance)
+bookkeeping as the scalar ECP path in `grad/rhf.py:_hcore_energy`:
+
+    ECP-centre C:  de[C,x] += Σ_a Σ_{q,p} G^C[a,x,q,p] W_a[p,q]
+    localised   A:  de[A,x] −= Σ_a Σ_{q∈A, p} G^sum[a,x,q,p] W_a[p,q]
+
+(`W_a` antisymmetric ⇒ the bra and ket localised pieces are equal; the two
+contributions cancel over all atoms, as required for a translation-invariant
+energy). `_ghf_jk_energy`'s non-collinear `logger.warn` placeholder is removed
+— the `k_factor=−2/+4` paths are now covered end-to-end by the `with_soc=True`
+FD test below.
+
+**Validation (A100).**
+
+| gate | check | result |
+|---|---|---|
+| V1 | `test_ecp_so.py::SoIpFiniteDifference` — per-atom analytic `dECPso/dR` vs central FD of `get_ecp_so` (h=1e-4). Pb/O CRENBL (`ul`), K/F ecpds10mdfso (explicit lc 0–3), HI CRENBL | `‖Δ‖` = 3.6e-11 / 6.1e-12 / 1.8e-10 |
+| V2 | `test_ecp_so.py` + `test_ecp_sweep.py` regression (new include must not perturb `get_ecp_so`) | 10 passed, 1526 subtests |
+| V3 | `test_ghf_grad.py::TestGHFGradSOC` — `GHF(mol); with_soc=True`, analytic `nuc_grad_method` vs central FD of `e_tot` (h=1e-4, conv_tol 1e-12). HI/CRENBL spin=0 (genuinely non-collinear, `|D_αβ|~3e-2`); single I atom spin=1 | `‖Δ‖` = 2.6e-9 ; 2.5e-10 (`‖g_analytic‖ ~ 2e-28`) |

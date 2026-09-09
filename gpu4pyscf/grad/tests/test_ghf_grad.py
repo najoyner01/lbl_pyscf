@@ -264,6 +264,88 @@ class TestGHFGrad(unittest.TestCase):
             f'GHF analytic gradient does not match finite diff: err={err:.3e}')
 
 
+class TestGHFGradSOC(unittest.TestCase):
+    """Test (V3): §5.1 / step 3 of docs/ghf-gradient-design.md.
+
+    Genuine with_soc=True finite-difference check.  The SO-ECP hcore
+    derivative (d ECPso/dR) goes through the new bra-derivative kernel
+    ECP_so_ip_cart (gpu4pyscf/lib/ecp/ecp_so_ip.cu ->
+    gpu4pyscf.gto.ecp.loop_ecp_so_ip) and grad/ghf.py:_soc_hcore_grad.
+
+    This is also the first true non-collinear FD check: even at spin=0 the SOC
+    term makes the converged density genuinely complex with D_ab != 0, so it
+    exercises the k_factor=-2 / k_factor=+4 JK paths that the scalar tests
+    (a)/(b) leave at zero.
+    """
+
+    def _fd_grad(self, mol, dm0, h=1e-4):
+        from gpu4pyscf.scf import ghf as gpu_ghf
+        coords0 = mol.atom_coords().copy()
+        natm = mol.natm
+        g = np.zeros((natm, 3))
+        for iatm in range(natm):
+            for ix in range(3):
+                def _e(delta):
+                    c = coords0.copy()
+                    c[iatm, ix] += delta
+                    m = mol.set_geom_(c, unit='Bohr', inplace=False)
+                    mf = gpu_ghf.GHF(m)
+                    mf.direct_scf_tol = 1e-14
+                    mf.conv_tol = 1e-12
+                    mf.with_soc = True
+                    mf.kernel(dm0)
+                    assert mf.converged
+                    return mf.e_tot
+                g[iatm, ix] = (_e(+h) - _e(-h)) / (2 * h)
+        return g
+
+    @pytest.mark.slow
+    def test_hi_soc_finite_diff(self):
+        """HI / CRENBL, spin=0, with_soc=True: analytic vs central FD."""
+        mol = _ghf_mol('H 0 0 0; I 0 0 1.61', 'crenbl', ecp='crenbl', spin=0)
+        self.assertTrue(mol.has_ecp_soc())
+        mf = _run_ghf(mol, with_soc=True)
+        g_analytic = mf.nuc_grad_method().kernel()
+
+        dm0 = mf.make_rdm1()
+        dm0 = dm0.get() if hasattr(dm0, 'get') else dm0
+        g_numerical = self._fd_grad(mol, dm0, h=1e-4)
+
+        err = np.linalg.norm(g_analytic - g_numerical)
+        print(f'\n[V3-HI] ||analytic - numerical|| = {err:.3e}')
+        print(f'        analytic:\n{g_analytic}')
+        print(f'        numerical:\n{g_numerical}')
+        self.assertLess(err, 1e-6,
+            f'GHF+SOC analytic gradient != finite diff: err={err:.3e}')
+
+    @pytest.mark.slow
+    def test_iodine_atom_soc_finite_diff(self):
+        """Single I atom / CRENBL, spin=1, with_soc=True.
+
+        A one-atom system: every d/dR term (bra, ket, ECP-centre) lands on the
+        same atom and the total SOC gradient must be zero by translational
+        invariance -- but the individual bra/ket/ECP-centre pieces are large,
+        so this still checks their cancellation.  The full analytic gradient
+        must vanish and match FD.
+        """
+        mol = _ghf_mol('I 0 0 0', 'crenbl', ecp='crenbl', spin=1)
+        self.assertTrue(mol.has_ecp_soc())
+        mf = _run_ghf(mol, with_soc=True)
+        g_analytic = mf.nuc_grad_method().kernel()
+
+        dm0 = mf.make_rdm1()
+        dm0 = dm0.get() if hasattr(dm0, 'get') else dm0
+        g_numerical = self._fd_grad(mol, dm0, h=1e-4)
+
+        err = np.linalg.norm(g_analytic - g_numerical)
+        print(f'\n[V3-I] ||analytic - numerical|| = {err:.3e}   '
+              f'||analytic|| = {np.linalg.norm(g_analytic):.3e}')
+        self.assertLess(err, 1e-6,
+            f'single-atom GHF+SOC gradient != finite diff: err={err:.3e}')
+        self.assertLess(np.linalg.norm(g_analytic), 1e-6,
+            'single-atom gradient must vanish by translational invariance')
+
+
 class TestGHFGradH2O(unittest.TestCase):
     """Finite-difference check on closed-shell H₂O (fast, no ECP)."""
 

@@ -15,16 +15,21 @@
 """GHF nuclear gradient.
 
 No CPU pyscf reference exists; derived from first principles in
-docs/ghf-gradient-design.md.  No new CUDA kernel: all 2e terms route through
-_jk_energies_per_atom (grad/tdrhf.py, kernel RYS_per_atom_jk_ip1_multidm).
+docs/ghf-gradient-design.md.  No new CUDA kernel for the 2e terms: they all
+route through _jk_energies_per_atom (grad/tdrhf.py, kernel
+RYS_per_atom_jk_ip1_multidm).
 
-SOC hcore gradient (d ECPso / dR) requires step-3 SO-ECP gradient integrals
-which are not yet implemented.  The flag _with_soc_hcore_grad is checked at
-run time; if True the function raises NotImplementedError.
+SOC hcore gradient (d ECPso / dR) uses the bra-derivative SO-ECP integral
+kernel ECP_so_ip_cart (gpu4pyscf/lib/ecp/ecp_so_ip.cu), exposed as
+gpu4pyscf.gto.ecp.loop_ecp_so_ip.  See _soc_hcore_grad below and step 3 of
+docs/ghf-gradient-design.md.
 """
 
+import numpy as np
 import cupy as cp
+from pyscf import gto
 from gpu4pyscf.lib import utils, logger
+from gpu4pyscf.lib.cupy_helper import contract
 from gpu4pyscf.grad import rhf as rhf_grad
 from gpu4pyscf.grad.tdrhf import _jk_energies_per_atom
 from gpu4pyscf.scf.jk import _VHFOpt
@@ -95,13 +100,11 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None,
     dm_sf = (dmaa + dmbb).real              # (nao, nao)
 
     # --- 1e + overlap Pulay (reuse existing scalar machinery) ---
-    if getattr(mf, 'with_soc', None):
-        raise NotImplementedError(
-            'GHF gradient with SOC hcore (d ECPso/dR) requires step-3 '
-            'SO-ECP gradient integrals, not yet implemented.  '
-            'Run without with_soc=True, or wait for the SO-ECP IP kernel.')
-
     e1_grad = mf_grad._hcore_energy(dm_sf, dme_sf)
+
+    # --- SOC hcore derivative (d ECPso/dR), step 3 ---
+    if getattr(mf, 'with_soc', None) and mol.has_ecp_soc():
+        e1_grad = e1_grad + _soc_hcore_grad(mol, dm_ghf)
     log.timer_debug1('GHF gradients of h1e', *t0)
 
     # --- 2e JK gradient (design doc §2.3) ---
@@ -111,6 +114,85 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None,
     de = e1_grad + e2_grad
     de += cp.asnumpy(mf_grad.extra_force())
     log.timer_debug1('GHF gradients of electronic part', *t0)
+    return de
+
+
+def _soc_hcore_grad(mol, dm_ghf):
+    """Nuclear gradient of the SOC hcore term  E_soc = Tr[h_soc . D_spinor].
+
+    h_soc = get_soc_1e(mol) = sum_a (-i/2) sigma_a (x) ECPso_a,
+    ECPso_a = get_ecp_so(mol)[a]  (real, antisymmetric, nao x nao).
+
+    Working the trace out in the nao x nao spin blocks
+    (D_{xy}[p,q] = D_spinor[x*nao+p, y*nao+q], x,y in {alpha,beta}):
+
+        E_soc = (1/2) sum_a Tr[ W_a . ECPso_a ],
+        W_a   = Im( sum_{x,y} pauli[a, y, x] D_{xy} )   (real, antisymmetric)
+
+    which expands to
+        W_x = Im(D_ab) - Im(D_ab).T
+        W_y = Re(D_ab) - Re(D_ab).T
+        W_z = Im(D_aa) - Im(D_bb)
+
+    At a variational minimum dD/dR does not contribute, so
+        dE_soc/dR_A = (1/2) sum_a Tr[ W_a . dECPso_a/dR_A ].
+
+    dECPso_a/dR_A is assembled from the bra-derivative integral
+        G[a,x,r,s] = < d/dr_x r | l_a U_SO | s >   (loop_ecp_so_ip)
+    using, for each matrix element <q| l_a U_SO |p> (q = bra, p = ket):
+        d/dR_A <q|..|p> = [q in A] (-G[a,x,q,p])          bra AO on A
+                        + [p in A] (+G[a,x,p,q])          ket AO on A (operator
+                                                          antisymmetry)
+                        + [A = ECP centre C] (2 T_a)      translational invar.
+    with T_a = Tr[G^C[a,x] . W_a].  Collecting terms (W_a antisymmetric makes
+    the bra and ket localised pieces equal), per atom:
+
+        ECP-centre C:   de[C,x] += sum_a Tr[ G^C[a,x] . W_a ]
+        localised   A:  de[A,x] -= sum_a sum_{q in A, p} G^sum[a,x,q,p] W_a[p,q]
+
+    (G^sum summed over all SO-ECP centres).  The two contributions sum to zero
+    over all atoms, as they must for a translationally invariant energy.
+
+    Mirrors the scalar-ECP bookkeeping in grad/rhf.py:_hcore_energy.
+    """
+    from gpu4pyscf.gto.ecp import loop_ecp_so_ip
+    nso = dm_ghf.shape[-1]
+    nao = nso // 2
+    dm_ghf = cp.asarray(dm_ghf)
+    dmaa = dm_ghf[:nao, :nao]
+    dmbb = dm_ghf[nao:, nao:]
+    dmab = dm_ghf[:nao, nao:]
+
+    A_ab = dmab.real
+    B_ab = dmab.imag
+    Y_aa = dmaa.imag
+    Y_bb = dmbb.imag
+    W = cp.stack([
+        B_ab - B_ab.T,      # a = x
+        A_ab - A_ab.T,      # a = y
+        Y_aa - Y_bb,        # a = z
+    ])                       # [3, nao, nao] real, antisymmetric
+
+    so = mol._ecpbas[:, gto.SO_TYPE_OF] == 1
+    ecp_atoms = sorted(set(int(a) for a in mol._ecpbas[so, gto.ATOM_OF]))
+
+    de = np.zeros((mol.natm, 3))
+    Gsum = None
+    for batch, G in loop_ecp_so_ip(mol, ecp_atoms=ecp_atoms):
+        # ECP-centre term:  de[C,x] += sum_a sum_{q,p} G[c,a,x,q,p] W_a[p,q]
+        de[np.asarray(batch)] += contract('caxqp,apq->cx', G, W).get()
+        s = G.sum(axis=0)
+        Gsum = s if Gsum is None else Gsum + s
+    if Gsum is None:
+        return de
+
+    # localised bra+ket:  contrib[q,x] = sum_a sum_p Gsum[a,x,q,p] W_a[p,q]
+    contrib = contract('axqp,apq->qx', Gsum, W)
+    aoslices = mol.aoslice_by_atom()
+    for A in range(mol.natm):
+        p0, p1 = int(aoslices[A, 2]), int(aoslices[A, 3])
+        if p1 > p0:
+            de[A] -= contrib[p0:p1].sum(axis=0).get()
     return de
 
 
@@ -200,27 +282,14 @@ def _ghf_jk_energy(mf_grad, dm_ghf, verbose=None):
     j_factor = [1.,  0.,  0.,  0.,  0.,  0.,  0.]
     k_factor = [0.,  2., -2.,  2., -2.,  4.,  4.]
 
-    # VALIDATION STATUS (see docs/ghf-gradient-design.md §4):
-    #   tested to FD/machine precision:  J term, and the real diagonal K
-    #     blocks X_aa / X_bb (k_factor=+2) -- covers every real, collinear
-    #     GHF/GKS solution.
-    #   NOT yet FD-validated:  the imaginary diagonal blocks Y_aa / Y_bb
-    #     (k_factor=-2) and the D_alpha,beta cross terms (k_factor=+4).
-    #     These are zero for a real block-diagonal solution, so no existing
-    #     test exercises them.  They switch on for any genuinely complex or
-    #     non-collinear density -- i.e. every SOC calculation.  Warn loudly
-    #     rather than return a silently-unvalidated number.
-    _imag_scale = float(cp.abs(Y_aa).max() + cp.abs(Y_bb).max())
-    _cross_scale = float(cp.abs(A_ab).max() + cp.abs(B_ab).max())
-    if _imag_scale > 1e-8 or _cross_scale > 1e-8:
-        logger.warn(mf,
-            'GHF gradient: density has significant imaginary-diagonal '
-            '(|Y|~%.1e) and/or spin-off-diagonal (|D_ab|~%.1e) blocks. '
-            'The k_factor=-2 / k_factor=+4 gradient paths for these are '
-            'NOT finite-difference validated yet (docs/ghf-gradient-design.md '
-            '§4). Do not trust this gradient for production SOC geometry '
-            'optimization until the non-collinear FD test passes.',
-            _imag_scale, _cross_scale)
+    # VALIDATION STATUS (see docs/ghf-gradient-design.md §4, §5.1):
+    #   - J term + real diagonal K blocks X_aa / X_bb (k_factor=+2):
+    #     FD / machine precision (tests a, b).
+    #   - imaginary diagonal Y_aa / Y_bb (k_factor=-2) and the D_alpha,beta
+    #     cross terms (k_factor=+4): exercised by the spin-rotation-invariance
+    #     test (c) and, end-to-end, by the with_soc=True finite-difference test
+    #     (grad/tests/test_ghf_grad.py::TestGHFGradSOC, HI/CRENBL spin=0 has
+    #     |D_ab| ~ 3e-2 and matches FD to ~3e-9).
 
     vhfopt = mf._opt_gpu.get(None)
     if vhfopt is None:

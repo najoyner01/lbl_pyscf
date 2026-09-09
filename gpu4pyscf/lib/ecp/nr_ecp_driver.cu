@@ -30,6 +30,7 @@
 #include "ecp_type2_ipip.cu"
 #include "so_ang_matrix.cu"
 #include "ecp_so.cu"
+#include "ecp_so_ip.cu"
 
 extern "C" {
 int ECP_cart(double *gctr,
@@ -413,6 +414,68 @@ int ECP_so_cart(double *gctr,
     }
 
     so_cart<<<blocks, threads, smem_size*sizeof(double)>>>(
+        gctr, li, lj, lc,
+        ao_loc, nao,
+        tasks, ntasks,
+        ecpbas, ecploc,
+        atm, bas, env);
+
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        fprintf(stderr, "CUDA Error in %s (li,lj,lc = %d,%d,%d): %s\n", __func__, li,lj,lc, cudaGetErrorString(err));
+        return 1;
+    }
+    return 0;
+    }
+
+int ECP_so_ip_cart(double *gctr,
+            const int *ao_loc, const int nao,
+            const int *tasks, const int ntasks,
+            const int *ecpbas, const int *ecploc,
+            const int *atm, const int *bas, const double *env,
+            const int li, const int lj, const int lc){
+    // Bra-derivative SO-ECP: gctr layout [n_ecp_atm, 3(a), 3(x), nao, nao].
+    // Host feeds only SO_TYPE_OF==1 projectors with `ul` rewritten to lmax+1,
+    // so lc >= 0 always, and a FULL (non-triangular) task list.
+    dim3 threads(THREADS);
+    dim3 blocks(ntasks);
+
+    if (lc < 0 || lc > ECP_LMAX){
+        fprintf(stderr, "ECP_so_ip_cart: unsupported projector lc=%d (need 0..%d)\n",
+                lc, ECP_LMAX);
+        return 1;
+    }
+
+    // Dynamic shared memory sized for the dominant internal call
+    // so_type2_cart_kernel<1,0>(.., li+1, lj, lc, ..): bra angular momentum
+    // raised to li+1.  Same layout as ECP_so_cart with li -> li+1.
+    const int li1 = li+2;                  // (li+1) + 1
+    const int lj1 = lj+1;
+    const int nfi = (li+2)*(li+3)/2;       // nf for raised bra (li+1)
+    const int nfj = (lj+1)*(lj+2)/2;
+    const int lic1 = (li+1)+lc+1;
+    const int ljc1 = lj+lc+1;
+    const int lcc1 = 2*lc+1;
+    const int blki = (lic1+1)/2 * lcc1;
+    const int blkj = (ljc1+1)/2 * lcc1;
+
+    int smem_size0 = ((li+1)+lj+1) * lic1 * ljc1;      // rad_all
+    int smem_size1 = li1*(li1+1)*(li1+2)/6 * blki;     // omegai
+    int smem_size2 = lj1*(lj1+1)*(lj1+2)/6 * blkj;     // omegaj (and omegaj_a)
+    int smem_size3 = li1*nfi*lic1;                     // angi
+    int smem_size4 = lj1*nfj*ljc1;                     // angj
+    int smem_size = smem_size0 + smem_size1 + 2*smem_size2 + smem_size3 + smem_size4;
+
+    cudaError_t attr_err = cudaFuncSetAttribute(
+        so_cart_ip1_general, cudaFuncAttributeMaxDynamicSharedMemorySize,
+        smem_size*sizeof(double));
+    if (attr_err != cudaSuccess) {
+        fprintf(stderr, "CUDA Error in cudaFuncSetAttribute %s (li,lj,lc = %d,%d,%d): %s\n",
+                __func__, li, lj, lc, cudaGetErrorString(attr_err));
+        return 1;
+    }
+
+    so_cart_ip1_general<<<blocks, threads, smem_size*sizeof(double)>>>(
         gctr, li, lj, lc,
         ao_loc, nao,
         tasks, ntasks,

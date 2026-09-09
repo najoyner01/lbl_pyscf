@@ -33,7 +33,7 @@ both molecular and periodic (`gpu4pyscf/pbc/`).
 |---|---|
 | DFT (LDA/GGA/meta-GGA/hybrid/range-separated) | ✅ `dft/` — full libxc coverage, RKS/UKS/GKS, PBC RKS/UKS |
 | Scalar-relativistic ECP | ✅ done this project (screening, grad, Hessian, molecular + PBC) |
-| Spin-orbit ECP | ✅ done this project (molecular + PBC energies); GKS+SO-ECP energies validated 2026-09-08 (`test_gks_x2c_soc.py`); **no gradients yet** |
+| Spin-orbit ECP | ✅ done this project (molecular + PBC energies); GKS+SO-ECP energies validated 2026-09-08 (`test_gks_x2c_soc.py`); **GHF/GKS analytic SO-ECP gradients done 2026-09-08** (`lib/ecp/ecp_so_ip.cu`, `grad/ghf.py:_soc_hcore_grad`; FD-validated, `docs/ghf-gradient-design.md` §5.2) |
 | Spin-orbit X2C | ⚠️ **partial** — `x2c/x2c.py:SpinOrbitalX2CHelper` energies validated at **GHF and GKS** (molecular, 2026-09-08); no gradients; PBC X2C exists (`pbc/x2c/x2c1e.py`) but scalar-only, not checked for SOC |
 | Geometry optimization / TS search | ✅ geomeTRIC (molecular), ASE-based cell optimizer (PBC) |
 | Frequencies (Hessian) | ✅ `hessian/` — RHF/UHF/RKS/UKS, molecular; PBC coverage partial |
@@ -104,15 +104,18 @@ Investigation findings that revise the plan below:
 Revised near-term sequence:
 1. Validate GKS+X2C-SOC on an actinide test case (Perlmutter). If it doesn't
    already work, fix forward from there rather than building from scratch.
-2. `grad/ghf.py` — GHF nuclear gradient (hcore/JK/overlap Pulay-force pattern,
-   no SOC yet). Validate vs finite difference and vs RHF-gradient reduction on
-   a closed-shell system (GHF without SOC should reduce to RHF).
-3. SO-ECP gradient integrals (extend `lib/ecp/ecp_so.cu`, mirroring how
-   `ecp_type2_ip.cu` extends `ecp_type2.cu` for the scalar case). Validate vs
-   finite difference of `get_ecp_so`.
-4. Wire 2+3 together: ECP-SOC contribution in `GHF.Gradients()` → the agreed
-   interim optimization path. Validate full SCF+gradient vs finite difference
-   of the GHF+ECP-SOC total energy.
+2. ✅ **DONE 2026-09-08.** `grad/ghf.py` — GHF nuclear gradient
+   (hcore/JK/overlap Pulay-force pattern). Validated vs finite difference and
+   vs RHF/UHF-gradient reduction. `docs/ghf-gradient-design.md`.
+3. ✅ **DONE 2026-09-08.** SO-ECP gradient integrals — `lib/ecp/ecp_so_ip.cu`
+   (`so_cart_ip1_general` / `ECP_so_ip_cart`), `ecp_so.cu` + the bra-derivative
+   recursion of `ecp_type2_ip.cu`. `gpu4pyscf.gto.ecp.loop_ecp_so_ip`.
+   FD-validated vs `get_ecp_so` (`test_ecp_so.py::SoIpFiniteDifference`).
+4. ✅ **DONE 2026-09-08.** Wired 2+3 together: `grad/ghf.py:_soc_hcore_grad`,
+   active when `mf.with_soc and mol.has_ecp_soc()`. Full SCF+gradient vs
+   central FD of the GHF+ECP-SOC total energy: HI/CRENBL spin=0 (non-collinear,
+   `|D_αβ|~3e-2`) `‖Δ‖ = 2.6e-9`; single I atom `‖g‖ ~ 2e-28`
+   (`test_ghf_grad.py::TestGHFGradSOC`). Not yet wired into geomeTRIC.
 5. EPR/ESR (g/A/D-tensor) and full ETS-NOCV/QTAIM — separate, large tracks;
    scope after 1-4 land, since geometry optimization is a workflow
    prerequisite for property/bonding-analysis calculations in practice.
@@ -193,7 +196,7 @@ optimization loop and the ADF-style covalency analysis are the gaps.
 
 | Gap | Impact | Effort |
 |---|---|---|
-| **SOC-level gradients** (ECP or X2C) | **GHF/GKS nuclear gradient DONE 2026-09-08** (`gpu4pyscf/grad/ghf.py`, merged) — validated scalar (UHF-reduction 4e-14, FD 1.7e-8) *and* non-collinear (spin-rotation invariance < 1e-8, exercises the `D_αβ`/imaginary `k_factor` paths). **Remaining:** the `d ECPso/dR` SO-ECP hcore gradient integral (`with_soc=True` currently raises) — an `ip`-kernel next to `so_cart` in `lib/ecp/ecp_so.cu`. That's the last piece for SOC-in-the-optimization-loop. | remaining piece: 1 CUDA IP kernel + wire-in + FD test |
+| **SOC-level gradients** | ECP route ✅ **DONE 2026-09-08** — GHF/GKS analytic SO-ECP nuclear gradients (`lib/ecp/ecp_so_ip.cu`, `grad/ghf.py:_soc_hcore_grad`), FD-validated on a genuinely non-collinear case (`docs/ghf-gradient-design.md` §5.2). Still open: X2C-SOC gradients, and wiring the ECP route into geomeTRIC. | ECP route done; X2C route medium–large |
 | ~~**Hirshfeld / CM5 charges**~~ | ✅ **DONE 2026-09-08.** `gpu4pyscf/pop/hirshfeld.py` — `hirshfeld_charges` / `cm5_charges`, ECP-consistent, handles RHF/UHF/GHF incl. SO-ECP densities. A100: 10/10 (Σq sum rule incl. GKS+SO-ECP; water on literature ranges; CM5 antisymmetry). No CPU PySCF reference existed. | ~~small~~ done |
 | ~~**GKS + SO-ECP / GKS + X2C-SOC validation**~~ | ✅ **DONE 2026-09-08.** Both routes validated vs CPU PySCF on A100 — `x2c/tests/test_gks_x2c_soc.py`, 7/7 (H₂O/cc-pvdz + I heavy-atom; `e_tot` to 1e-6–1e-7, `mo_energy` to 1e-4–1e-5). Confirmed the GKS-is-a-GHF inheritance path needs no GKS-specific SOC code. Bonus fix: `dft/gks.py:GKS.__init__` now defaults `collinear='mcol'` (the only 2-component XC scheme gpu4pyscf implements; plain `'col'` always raised). CPU cross-checks need `pip install mcfun`; the GPU path does not. | ~~small~~ done |
 
@@ -224,10 +227,10 @@ Separation *selectivity* is rationalized through An–L bond covalency
    (merged to `gpu-porting`). Trustworthy DFT+SOC single points now unblocked.
 2. ~~Hirshfeld/CM5 charges~~ — ✅ DONE 2026-09-08 (`gpu4pyscf/pop/hirshfeld.py`,
    merged to `gpu-porting`).
-3. GHF/GKS gradient — ✅ DONE 2026-09-08 (`gpu4pyscf/grad/ghf.py`). SO-ECP
-   *hcore* gradient integral (`d ECPso/dR`) still needed to turn on
-   `with_soc=True` gradients → then SOC geometry optimization / SOC-ΔG works
-   end to end. **← the only Tier-1 item left.**
+3. ~~GHF/GKS + SO-ECP gradients~~ — ✅ DONE 2026-09-08
+   (`docs/ghf-gradient-design.md` §5.2). Analytic SO-ECP nuclear gradient
+   FD-validated; still needs geomeTRIC wiring before SOC geometry optimization
+   is a turnkey workflow. X2C-SOC gradients remain the last SOC-gradient gap.
 4. ETS-NOCV — the highest-value bonding-analysis gap for selectivity
    rationalization.
 5. QTAIM.

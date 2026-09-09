@@ -49,6 +49,11 @@ _HAS_SO = hasattr(libecp, 'ECP_so_cart')
 if _HAS_SO:
     libecp.ECP_so_cart.argtypes = ecp_cart_argtypes
 
+# Bra-derivative SO-ECP kernel (for GHF/GKS SOC nuclear gradients).
+_HAS_SO_IP = hasattr(libecp, 'ECP_so_ip_cart')
+if _HAS_SO_IP:
+    libecp.ECP_so_ip_cart.argtypes = ecp_cart_argtypes
+
 ECP_ATOM_ID = 7
 
 # Enable/disable the shell-pair x ECP-center screening of the task list.
@@ -502,6 +507,54 @@ class _EcpDerivContext:
         mat1 = contract('axiq,ip->axpq', mat1, self.coeff)
         return mat1
 
+    def run_batch_so(self, ecp_atoms_batch):
+        '''[len(ecp_atoms_batch), 3(a), 3(xyz), nao, nao] real, in the AO
+        (transformed) basis:  ``< d/dr_x r | l_a U_SO | s >`` with the SO-ECP
+        projectors restricted to ``ecp_atoms_batch[c]`` for row ``c``.
+
+        Mirrors :meth:`run_batch` but keeps the spin-orbit (``SO_TYPE_OF == 1``)
+        projectors and uses the ``ECP_so_ip_cart`` kernel.
+        '''
+        nbatch = len(ecp_atoms_batch)
+        nsph = self.coeff.shape[1]
+        empty = cp.zeros([nbatch, 3, 3, nsph, nsph])
+        ecpbas = select_basis(self.ecpbas_src, list(ecp_atoms_batch))
+        if len(ecpbas) == 0:
+            return empty
+        ecpbas, uniq_lecp, lecp_counts, ecp_loc = sort_ecp_basis_so(ecpbas)
+        if len(ecpbas) == 0:
+            return empty
+        lecp_offsets = np.append(0, np.cumsum(lecp_counts))
+        screen_data = _build_screen_data(self._sorted_mol, ecpbas, ecp_loc)
+        tasks_all = make_full_tasks(self.l_ctr_offsets, lecp_offsets,
+                                    screen_data, self.expcutoff)
+
+        ecpbas_gpu = cp.asarray(ecpbas, dtype=np.int32)
+        ecploc_gpu = cp.asarray(ecp_loc, dtype=np.int32)
+        n_ecp_groups = len(uniq_lecp)
+        mat1 = cp.zeros([nbatch, 3, 3, self.nao, self.nao])
+        for i in range(self.n_groups):
+            for j in range(self.n_groups):
+                for k in range(n_ecp_groups):
+                    task = tasks_all[i, j, k]
+                    if len(task) == 0:
+                        continue
+                    task = cp.asarray(task, dtype=np.int32, order='F')
+                    err = libecp.ECP_so_ip_cart(
+                        mat1.data.ptr, self.ao_loc.data.ptr, self.nao,
+                        task.data.ptr, len(task),
+                        ecpbas_gpu.data.ptr, ecploc_gpu.data.ptr,
+                        self.atm.data.ptr, self.bas.data.ptr, self.env.data.ptr,
+                        int(self.uniq_l_ctr[i, 0]), int(self.uniq_l_ctr[j, 0]),
+                        int(uniq_lecp[k]))
+                    if err != 0:
+                        raise RuntimeError('SO-ECP IP CUDA kernel failed.')
+        nsph = self.coeff.shape[1]
+        flat = mat1.reshape(nbatch * 9, self.nao, self.nao)
+        flat = contract('aij,jq->aiq', flat, self.coeff)
+        flat = contract('aiq,ip->apq', flat, self.coeff)
+        return flat.reshape(nbatch, 3, 3, nsph, nsph)
+
 
 def _default_ecp_atoms(mol):
     return sorted(set(int(a) for a in mol._ecpbas[:, gto.ATOM_OF]))
@@ -610,3 +663,60 @@ def get_ecp_ip_sum(mol, ip_type='ip', ecp_atoms=None, batch_size=None):
 def get_ecp_ipip_sum(mol, ip_type='ipipv', ecp_atoms=None, batch_size=None):
     '''sum over ECP atoms of the 2nd-derivative integrals -> [9, nao, nao].'''
     return get_ecp_ip_sum(mol, ip_type, ecp_atoms, batch_size)
+
+
+def _default_ecp_so_atoms(mol):
+    so = mol._ecpbas[:, gto.SO_TYPE_OF] == 1
+    return sorted(set(int(a) for a in mol._ecpbas[so, gto.ATOM_OF]))
+
+
+def loop_ecp_so_ip(mol, ecp_atoms=None, batch_size=None):
+    '''Generator over SO-ECP centres in memory-bounded chunks.
+
+    Yields ``(atom_ids, mat)`` where ``mat`` is a CuPy array
+    ``[len(atom_ids), 3(a), 3(xyz), nao, nao]`` real:
+    ``mat[c, a, x, r, s] = < d/dr_x r | l_a U_SO | s >`` with the spin-orbit
+    ECP projectors restricted to centre ``atom_ids[c]``.
+
+    The bra-derivative breaks the (r, s) antisymmetry that :func:`get_ecp_so`
+    relies on, so a full (non-triangular) task list is used and no transpose
+    block is written by the kernel.  Assemble the per-atom nuclear gradient
+    (ket transpose + translational invariance for the ECP-centre atom) in the
+    caller -- see ``gpu4pyscf/grad/ghf.py``.
+    '''
+    assert len(mol._ecpbas) > 0
+    if not _HAS_SO_IP:
+        raise NotImplementedError(
+            'libgecp was built without ECP_so_ip_cart; rebuild gpu4pyscf/lib.')
+    if not np.any(mol._ecpbas[:, gto.SO_TYPE_OF] == 1):
+        raise ValueError('mol has no spin-orbit ECP projectors')
+
+    if ecp_atoms is None:
+        ecp_atoms = _default_ecp_so_atoms(mol)
+    else:
+        ecp_atoms = [int(a) for a in ecp_atoms]
+    if len(ecp_atoms) == 0:
+        return
+
+    ctx = _EcpDerivContext(mol)
+    bs = _ecp_atom_batch_size(9, ctx.nao, len(ecp_atoms), batch_size)
+    for p0 in range(0, len(ecp_atoms), bs):
+        batch = ecp_atoms[p0:p0+bs]
+        yield batch, ctx.run_batch_so(batch)
+
+
+def get_ecp_so_ip(mol, ecp_atoms=None, batch_size=None):
+    '''Bra-derivative of the spin-orbit ECP integrals, summed over SO-ECP
+    centres.
+
+    Returns:
+        CuPy array ``[3(a), 3(xyz), nao, nao]`` real (spherical AO basis):
+        ``Sum_C < d/dr_x r | l_a U_SO^C | s >``.
+    '''
+    out = None
+    for _batch, mat in loop_ecp_so_ip(mol, ecp_atoms, batch_size):
+        s = mat.sum(axis=0)
+        out = s if out is None else out + s
+    if out is None:
+        return cp.zeros([3, 3, mol.nao, mol.nao])
+    return out
