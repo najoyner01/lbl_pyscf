@@ -500,3 +500,28 @@ mirroring `hessian/{rhf,uhf,rks,uks}.py`.  `mf.Hessian().kernel()` →
 | V7 | regression: `hessian/tests/` (analytic RHF/RKS/UHF/UKS) + SOC grad/geomopt/PCM suites | unaffected (new module + one import line) |
 
 Tests: `hessian/tests/test_fd_hessian.py` (FD ones `@pytest.mark.slow`).
+Captured A100 run: `hessian/tests/results/fd_hessian_A100.md`.
+
+**Known limitation — GKS+SOC frequencies are not converged at `spin_samples=50`.**
+FD amplifies energy/gradient noise by `1/disp`, and for a genuinely
+non-collinear density the mcfun spin-angular quadrature is the noise source: the
+V3 HI GKS(pbe0)+SOC stretch came out **2253 cm⁻¹** in the captured run vs
+**≈2430 cm⁻¹** on an earlier draw — a ~100–200 cm⁻¹ spread, wide enough to move
+ZPE by a few tenths of a kcal/mol and to contaminate S, hence ΔG. The collinear
+path is unaffected (V2 matches the analytic UKS Hessian to 2.6e-6, because
+mcfun's `collinear_thrd` shortcut takes over), and the GHF path is fully
+deterministic (V3 reproduces 2441 cm⁻¹ tightly; V4/V6 use GHF). The V3 gate
+(2000–2600 cm⁻¹) is loose enough that it passes either way — it is a smoke test,
+not a convergence check.
+
+`spin_samples=50` is a **test-suite speed setting**, not a production one (the
+library default is 770). For any thermochemistry that matters:
+
+- raise `spin_samples` to ≥770 and confirm the frequency is stable against a
+  further increase before trusting ZPE / S / G;
+- `finite_diff_hessian` now emits a `logger.warn` when it is handed a SOC GKS
+  object with `spin_samples < 770`.
+
+Still open: a proper `spin_samples` convergence study for GKS+SOC frequencies,
+and an analytic 2-component / SOC Hessian (would remove the FD noise
+amplification entirely).

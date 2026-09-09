@@ -27,6 +27,18 @@ the driver reuses the method's own gradient scanner
 (``mf.nuc_grad_method().as_scanner()``); for GKS the scanner is built from a
 ``grid_response=True`` gradient (otherwise the omitted grid-weight-derivative
 term leaves a ~5e-5 gradient floor that shows up as noise in the Hessian).
+
+.. warning::
+   **GKS + SOC frequencies need a converged ``spin_samples``.**  Finite
+   differencing amplifies any noise in the energy/gradient by ``1/disp``.  For a
+   genuinely non-collinear density the mcfun spin-angular quadrature is the
+   noise source: at ``spin_samples=50`` (the fast setting the test suite uses)
+   the HI GKS(pbe0)+SOC stretch was seen to move by ~100 cm-1 between runs.  The
+   collinear case is unaffected (mcfun's ``collinear_thrd`` shortcut takes over,
+   and the FD Hessian reproduces the analytic UKS Hessian to 2.6e-6).  Use the
+   default ``spin_samples=770`` or higher and verify frequency convergence
+   before trusting ZPE / S / dG.  ``finite_diff_hessian`` warns when it sees a
+   low value on a SOC GKS input.
 """
 
 import numpy as np
@@ -36,6 +48,11 @@ from gpu4pyscf.lib import logger
 __all__ = ['finite_diff_hessian', 'harmonic_and_thermo', 'Hessian']
 
 _CONV_TOL_MAX = 1e-11
+
+# Below this, the mcfun spin-angular quadrature is too coarse to finite-difference
+# against for a genuinely non-collinear (SOC) density -- see the warning in
+# finite_diff_hessian and docs/ghf-gradient-design.md Sec 5.6.
+_SPIN_SAMPLES_MIN = 770
 
 
 def _is_gks(mf):
@@ -83,6 +100,24 @@ def finite_diff_hessian(mf, disp=1e-3, verbose=None, grad_scanner=None):
         mf.kernel()
 
     want_soc = bool(getattr(mol, 'has_ecp_soc', lambda: False)())
+
+    # A coarse mcfun spin-angular grid makes the non-collinear XC energy (hence
+    # the gradient) noisy; finite differencing amplifies that noise by 1/disp.
+    # The collinear case is unaffected -- mcfun's collinear_thrd shortcut takes
+    # over -- so this only bites for a genuinely non-collinear (SOC) density,
+    # exactly the production case.  Observed: the HI GKS(pbe0)+SOC stretch moves
+    # by ~100 cm-1 between runs at spin_samples=50 (the fast setting used by the
+    # test suite), which propagates into ZPE and S, hence into dG.
+    n_spin = getattr(mf, 'spin_samples', None)
+    if (_is_gks(mf) and want_soc and getattr(mf, 'with_soc', None)
+            and n_spin is not None and n_spin < _SPIN_SAMPLES_MIN):
+        log.warn(
+            'FD Hessian on a non-collinear (SOC) GKS density with '
+            'spin_samples=%s (< %s). Frequencies are NOT converged w.r.t. the '
+            'mcfun spin-angular grid at this setting and can move by ~100 cm-1 '
+            'run to run, which propagates into ZPE/S/dG. Raise spin_samples '
+            '(default %s) and check convergence before trusting thermochemistry.',
+            n_spin, _SPIN_SAMPLES_MIN, _SPIN_SAMPLES_MIN)
 
     scan = grad_scanner if grad_scanner is not None else _make_grad_scanner(mf)
 
