@@ -101,13 +101,19 @@ def finite_diff_hessian(mf, disp=1e-3, verbose=None, grad_scanner=None):
 
     want_soc = bool(getattr(mol, 'has_ecp_soc', lambda: False)())
 
-    # A coarse mcfun spin-angular grid makes the non-collinear XC energy (hence
-    # the gradient) noisy; finite differencing amplifies that noise by 1/disp.
-    # The collinear case is unaffected -- mcfun's collinear_thrd shortcut takes
-    # over -- so this only bites for a genuinely non-collinear (SOC) density,
-    # exactly the production case.  Observed: the HI GKS(pbe0)+SOC stretch moves
-    # by ~100 cm-1 between runs at spin_samples=50 (the fast setting used by the
-    # test suite), which propagates into ZPE and S, hence into dG.
+    # spin_samples picks a *deterministic* Lebedev grid (mcfun_gpu._make_sph_
+    # samples -> MakeAngularGrid), so identical input gives identical output.
+    # But a coarse grid does not integrate the spin-angular dependence exactly,
+    # which leaves the multi-collinear XC energy weakly dependent on the
+    # orientation of the spin quantization axis -- an orientation that is
+    # physically arbitrary (globally degenerate) and that the SCF can land on
+    # differently from run to run.  The resulting PES wobble is amplified by
+    # 1/disp here.  The collinear case is unaffected (mcfun's collinear_thrd
+    # shortcut takes over), so this only bites for a genuinely non-collinear
+    # (SOC) density -- exactly the production case.  Observed: the HI
+    # GKS(pbe0)+SOC stretch differed by ~180 cm-1 between two runs at
+    # spin_samples=50 (the test-suite speed setting), which propagates into ZPE
+    # and S, hence into dG.  See docs/ghf-gradient-design.md Sec 5.6.
     n_spin = getattr(mf, 'spin_samples', None)
     if (_is_gks(mf) and want_soc and getattr(mf, 'with_soc', None)
             and n_spin is not None and n_spin < _SPIN_SAMPLES_MIN):

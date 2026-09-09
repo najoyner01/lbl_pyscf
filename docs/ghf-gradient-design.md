@@ -503,16 +503,30 @@ Tests: `hessian/tests/test_fd_hessian.py` (FD ones `@pytest.mark.slow`).
 Captured A100 run: `hessian/tests/results/fd_hessian_A100.md`.
 
 **Known limitation — GKS+SOC frequencies are not converged at `spin_samples=50`.**
-FD amplifies energy/gradient noise by `1/disp`, and for a genuinely
-non-collinear density the mcfun spin-angular quadrature is the noise source: the
-V3 HI GKS(pbe0)+SOC stretch came out **2253 cm⁻¹** in the captured run vs
-**≈2430 cm⁻¹** on an earlier draw — a ~100–200 cm⁻¹ spread, wide enough to move
-ZPE by a few tenths of a kcal/mol and to contaminate S, hence ΔG. The collinear
-path is unaffected (V2 matches the analytic UKS Hessian to 2.6e-6, because
-mcfun's `collinear_thrd` shortcut takes over), and the GHF path is fully
-deterministic (V3 reproduces 2441 cm⁻¹ tightly; V4/V6 use GHF). The V3 gate
-(2000–2600 cm⁻¹) is loose enough that it passes either way — it is a smoke test,
-not a convergence check.
+The V3 HI GKS(pbe0)+SOC stretch came out **2253 cm⁻¹** in the captured run vs
+**≈2430 cm⁻¹** on an earlier draw — a ~180 cm⁻¹ spread, wide enough to move ZPE
+by a few tenths of a kcal/mol and to contaminate S, hence ΔG. The collinear path
+is unaffected (V2 matches the analytic UKS Hessian to 2.6e-6, because mcfun's
+`collinear_thrd` shortcut takes over), and the GHF path reproduces 2441 cm⁻¹
+tightly (V4/V6 use GHF). The V3 gate (2000–2600 cm⁻¹) is loose enough that it
+passes either way — it is a smoke test, not a convergence check.
+
+*Mechanism — hypothesis, not yet confirmed.* `spin_samples` selects a
+**deterministic** Lebedev grid (`dft/mcfun_gpu.py:_make_sph_samples` →
+`MakeAngularGrid`), so identical input gives identical output; the spread is
+therefore not quadrature randomness. The likely cause is that a coarse Lebedev
+grid does not integrate the spin-angular dependence exactly, leaving the
+multi-collinear XC energy weakly dependent on the **orientation of the spin
+quantization axis** — an orientation that is physically arbitrary (globally
+degenerate) and that the SCF can land on differently from run to run. FD then
+amplifies the resulting PES wobble by `1/disp`. This is directly testable with
+the global-spin-rotation machinery already used by
+`test_ghf_spin_rotation_invariance` (§4.3): at fixed geometry and fixed density,
+rotate the spin axis and watch the GKS+SOC energy — exactly invariant in exact
+theory, so any variation is the quadrature's rotational-invariance error, and it
+should shrink as `spin_samples` grows. Other candidates to rule out: a different
+converged SCF solution, or the two runs having optimized to slightly different
+geometries.
 
 `spin_samples=50` is a **test-suite speed setting**, not a production one (the
 library default is 770). For any thermochemistry that matters:
