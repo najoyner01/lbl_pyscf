@@ -229,9 +229,17 @@ Separation *selectivity* is rationalized through An–L bond covalency
    merged to `gpu-porting`).
 3. ~~GHF/GKS + SO-ECP gradients~~ — ✅ DONE 2026-09-08
    (`docs/ghf-gradient-design.md` §5.2–5.3). Analytic SO-ECP nuclear gradient
-   at HF (GHF) and DFT (GKS, `grad/gks.py`) level, FD-validated; still needs
-   geomeTRIC wiring before SOC geometry optimization is a turnkey workflow.
+   at HF (GHF) and DFT (GKS, `grad/gks.py`) level, FD-validated.
    X2C-SOC gradients remain the last SOC-gradient gap.
+3b. ~~SOC in the geometry-optimization loop~~ — ✅ DONE 2026-09-08
+   (`docs/ghf-gradient-design.md` §5.4). `pyscf.geomopt.geometric_solver.
+   optimize` runs to convergence for `scf.GHF(mol); with_soc=True` and
+   `dft.GKS(mol, xc='pbe0'); with_soc=True` on SO-ECP molecules — **no new
+   gpu4pyscf code**, just the documented call pattern (for GKS: set
+   `g.grid_response = True` and pass `g.as_scanner()`). `with_soc` survives
+   `mf.reset()` across optimizer steps (it is in `GHF._keys`), so SOC genuinely
+   shifts the minimum (HI: SOC vs no-SOC r(H–I) differ by 2.7e-3 Å at GHF).
+   Tests: `grad/tests/test_soc_geomopt.py`. Not yet exercised on an actinide.
 4. ETS-NOCV — the highest-value bonding-analysis gap for selectivity
    rationalization.
 5. QTAIM.

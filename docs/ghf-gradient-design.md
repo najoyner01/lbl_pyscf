@@ -340,4 +340,51 @@ global hybrids; MGGA and NLC raise `NotImplementedError`.  Single GPU.
 | V3 | FD, with SOC — `GKS(xc='pbe0'); with_soc=True` on HI/CRENBL spin=0 (`\|D_αβ\|~3e-2`), `grid_response=True` | `‖analytic−FD‖` = 7.6e-9 |
 | V4 | regression — `test_ghf_grad.py` 7/7; GPU `test_gks.py::test_mcol_gks_{lda,gga,hyb,mgga}` pass.  The CPU-`mcfun` cross-check tests in `test_gks.py` SIGABRT/SIGSEGV inside `pyscf/dft/numint2c.py` + libxc-in-threads — reproduced on a pristine checkout, pre-existing and unrelated. |
 
-Tests: `grad/tests/test_gks_grad.py` (8 pass).  Not wired into geomeTRIC.
+Tests: `grad/tests/test_gks_grad.py` (8 pass).
+
+### 5.4 Update 2026-09-08 — SOC geometry optimization
+
+`pyscf.geomopt.geometric_solver.optimize` drives the analytic SO-ECP
+gradients above.  **No new gpu4pyscf code** was needed — `with_soc` is an
+instance attribute in `GHF._keys`, so it survives `mf.reset(new_mol)` at every
+optimizer step, and `mf.set_geom_(..., inplace=False)` preserves
+`ecp=`/`basis=`/`spin=` (`mol.has_ecp_soc()` stays `True` throughout).
+
+**Recommended call.**
+
+    # GHF + SO-ECP (Hartree-Fock level)
+    mf = scf.GHF(mol); mf.with_soc = True; mf.kernel()
+    mol_eq = optimize(mf, maxsteps=20)
+
+    # GKS + SO-ECP (DFT level) — grid_response=True strongly recommended
+    mf = dft.GKS(mol, xc='pbe0'); mf.with_soc = True
+    mf.spin_samples = 50          # cheaper mcfun spin-angular quadrature
+    mf.kernel()
+    g = mf.nuc_grad_method(); g.grid_response = True
+    mol_eq = optimize(g.as_scanner(), maxsteps=20)
+
+Caveats:
+
+- `optimize()` accepts an SCF object (uses its *default* gradient —
+  `grid_response=False` for GKS) or a `lib.GradScanner` (`g.as_scanner()`,
+  which copies a pre-configured `g` via `__dict__.update`).  It does **not**
+  accept a bare gpu4pyscf `Gradients` object (gpu4pyscf's `GradientsBase` is
+  not a subclass of pyscf's) — always call `.as_scanner()`.
+- For GKS, `grid_response=False` leaves a ~5e-5 gradient floor (the omitted
+  grid-weight-derivative term) that can stall convergence near the minimum;
+  set `grid_response=True` and pass `g.as_scanner()`.
+- `spin_samples=50` keeps the mcfun angular quadrature cheap enough for an
+  optimization; use the production default (770) for the final single point.
+
+**Validated (A100, CRENBL, `maxsteps≤20`).**
+
+| gate | check | result |
+|---|---|---|
+| T1 | `scf.GHF(HI); with_soc=True` → `optimize(mf)` | converged, r(H–I) = **1.6041 Å**, ‖grad‖ at min = 3.5e-7 |
+| T2 | `dft.GKS(HI, xc='pbe0'); with_soc=True; spin_samples=50`, `g.grid_response=True` → `optimize(g.as_scanner())` | converged, r(H–I) = **1.6425 Å**, fresh ‖grad‖ = 2.3e-6 |
+| T3 | GHF optimize HI with vs without `with_soc` | r differ by **2.7e-3 Å** (1.6041 vs 1.6015) — SOC not lost in the scanner |
+| T4 | plain (no-SOC) mcol-`GKS(HF, xc='pbe0')` optimize | converged, r(H–F) = 0.920 Å, fresh ‖grad‖ = 4e-7; `grad/tests/test_geomopt.py` unaffected (no code change) |
+| T5 | fresh analytic gradient at each converged geometry | ‖grad‖ < 1e-4 (GHF), < 3e-4 (GKS) |
+
+Tests: `grad/tests/test_soc_geomopt.py`.  Not yet exercised on an actinide;
+`geomeTRIC` and `mcfun` must be importable.
