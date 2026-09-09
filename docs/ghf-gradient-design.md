@@ -302,3 +302,42 @@ FD test below.
 | V1 | `test_ecp_so.py::SoIpFiniteDifference` — per-atom analytic `dECPso/dR` vs central FD of `get_ecp_so` (h=1e-4). Pb/O CRENBL (`ul`), K/F ecpds10mdfso (explicit lc 0–3), HI CRENBL | `‖Δ‖` = 3.6e-11 / 6.1e-12 / 1.8e-10 |
 | V2 | `test_ecp_so.py` + `test_ecp_sweep.py` regression (new include must not perturb `get_ecp_so`) | 10 passed, 1526 subtests |
 | V3 | `test_ghf_grad.py::TestGHFGradSOC` — `GHF(mol); with_soc=True`, analytic `nuc_grad_method` vs central FD of `e_tot` (h=1e-4, conv_tol 1e-12). HI/CRENBL spin=0 (genuinely non-collinear, `|D_αβ|~3e-2`); single I atom spin=1 | `‖Δ‖` = 2.6e-9 ; 2.5e-10 (`‖g_analytic‖ ~ 2e-28`) |
+
+### 5.3 Update 2026-09-08 — GKS (2-component DFT) nuclear gradient
+
+`grad/gks.py`, `class Gradients(ghf_grad.Gradients)`.  Wired via
+`dft/gks.py:GKS.nuc_grad_method`.  Everything the GHF gradient does (hcore +
+overlap Pulay + SO-ECP hcore derivative) is inherited unchanged; two things
+are added.
+
+**Scaled exact exchange.**  `grad/ghf.py:_ghf_jk_energy` gained a `k_scale`
+argument (default `1.0`, so the GHF path is untouched).  GKS passes the
+functional hybrid coefficient (`0` for a pure functional); J is never scaled.
+`omega != 0` (range-separated hybrids) raises `NotImplementedError`.
+
+**Multi-collinear XC gradient** (`_gks_xc_grad`).  Mirrors `grad/uks.py` but
+replaces the `(α, β)` spin split with the `(ρ, m_x, m_y, m_z)` → spin-block
+mapping of `dft/numint2c.py`.  From the sorted 2-component DM,
+
+    dm_ρ  = Re(D_αα + D_ββ)      dm_mz = Re(D_αα − D_ββ)
+    dm_mx = A_αβ + A_αβᵀ         dm_my = −(B_αβ + B_αβᵀ)
+
+(`A_αβ = Re D_αβ`, `B_αβ = Im D_αβ`; all four real symmetric).  Each channel
+`c` pairs its `mcfun` potential `vxc_c` (`[wr, wmx, wmy, wmz]`) with `dm_c` in
+exactly `grad/uks.py`'s per-spin `_d1_dot_` / `_gga_grad_sum_` +
+`−2·reduce_to_atom` pipeline.  For a collinear solution (`D_αβ = 0`) the
+`m_x`/`m_y` channels vanish and the sum reduces term-by-term to `grad/uks.py`.
+`grid_response=True` adds the grid-weight + grid-ρ response, mirroring
+`grad/uks.py:get_exc_full_response` with the 4-channel `dvmat`.  LDA, GGA and
+global hybrids; MGGA and NLC raise `NotImplementedError`.  Single GPU.
+
+**Validation (A100, `spin_samples=50`, `grids.level=3`).**
+
+| gate | check | result |
+|---|---|---|
+| V1 | collinear reduction — real block-diagonal GKS (UKS MOs embedded) vs `grad/uks.py`, `grid_response=True`, O₂ triplet / def2-svp | `‖GKS−UKS‖` = svwn 1.8e-11, pbe 3.6e-11, pbe0 1.0e-12 |
+| V2 | FD, no SOC — `GKS(H₂O/def2-svp, xc)` analytic vs central FD of `e_tot` (h=1e-4) | `grid_response=True`: svwn 1.2e-7, pbe 2.0e-7, pbe0 4.4e-8.  `=False` (quadrature-limited): 5–7e-5 |
+| V3 | FD, with SOC — `GKS(xc='pbe0'); with_soc=True` on HI/CRENBL spin=0 (`\|D_αβ\|~3e-2`), `grid_response=True` | `‖analytic−FD‖` = 7.6e-9 |
+| V4 | regression — `test_ghf_grad.py` 7/7; GPU `test_gks.py::test_mcol_gks_{lda,gga,hyb,mgga}` pass.  The CPU-`mcfun` cross-check tests in `test_gks.py` SIGABRT/SIGSEGV inside `pyscf/dft/numint2c.py` + libxc-in-threads — reproduced on a pristine checkout, pre-existing and unrelated. |
+
+Tests: `grad/tests/test_gks_grad.py` (8 pass).  Not wired into geomeTRIC.

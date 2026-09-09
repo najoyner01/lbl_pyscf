@@ -196,7 +196,7 @@ optimization loop and the ADF-style covalency analysis are the gaps.
 
 | Gap | Impact | Effort |
 |---|---|---|
-| **SOC-level gradients** | ECP route ✅ **DONE 2026-09-08** — GHF/GKS analytic SO-ECP nuclear gradients (`lib/ecp/ecp_so_ip.cu`, `grad/ghf.py:_soc_hcore_grad`), FD-validated on a genuinely non-collinear case (`docs/ghf-gradient-design.md` §5.2). Still open: X2C-SOC gradients, and wiring the ECP route into geomeTRIC. | ECP route done; X2C route medium–large |
+| **SOC-level gradients** | ECP route ✅ **DONE 2026-09-08** — analytic SO-ECP nuclear gradients at both **HF (GHF)** and **DFT (GKS)** level: SO-ECP hcore-derivative integral (`lib/ecp/ecp_so_ip.cu`, `grad/ghf.py:_soc_hcore_grad`) + multi-collinear XC gradient (`grad/gks.py`, LDA/GGA/global-hybrid, with grid response). FD-validated on genuinely non-collinear cases (`docs/ghf-gradient-design.md` §5.2–5.3). Still open: X2C-SOC gradients, range-separated-hybrid & MGGA GKS gradients, geomeTRIC wiring. | ECP route done; X2C route medium–large |
 | ~~**Hirshfeld / CM5 charges**~~ | ✅ **DONE 2026-09-08.** `gpu4pyscf/pop/hirshfeld.py` — `hirshfeld_charges` / `cm5_charges`, ECP-consistent, handles RHF/UHF/GHF incl. SO-ECP densities. A100: 10/10 (Σq sum rule incl. GKS+SO-ECP; water on literature ranges; CM5 antisymmetry). No CPU PySCF reference existed. | ~~small~~ done |
 | ~~**GKS + SO-ECP / GKS + X2C-SOC validation**~~ | ✅ **DONE 2026-09-08.** Both routes validated vs CPU PySCF on A100 — `x2c/tests/test_gks_x2c_soc.py`, 7/7 (H₂O/cc-pvdz + I heavy-atom; `e_tot` to 1e-6–1e-7, `mo_energy` to 1e-4–1e-5). Confirmed the GKS-is-a-GHF inheritance path needs no GKS-specific SOC code. Bonus fix: `dft/gks.py:GKS.__init__` now defaults `collinear='mcol'` (the only 2-component XC scheme gpu4pyscf implements; plain `'col'` always raised). CPU cross-checks need `pip install mcfun`; the GPU path does not. | ~~small~~ done |
 
@@ -228,9 +228,10 @@ Separation *selectivity* is rationalized through An–L bond covalency
 2. ~~Hirshfeld/CM5 charges~~ — ✅ DONE 2026-09-08 (`gpu4pyscf/pop/hirshfeld.py`,
    merged to `gpu-porting`).
 3. ~~GHF/GKS + SO-ECP gradients~~ — ✅ DONE 2026-09-08
-   (`docs/ghf-gradient-design.md` §5.2). Analytic SO-ECP nuclear gradient
-   FD-validated; still needs geomeTRIC wiring before SOC geometry optimization
-   is a turnkey workflow. X2C-SOC gradients remain the last SOC-gradient gap.
+   (`docs/ghf-gradient-design.md` §5.2–5.3). Analytic SO-ECP nuclear gradient
+   at HF (GHF) and DFT (GKS, `grad/gks.py`) level, FD-validated; still needs
+   geomeTRIC wiring before SOC geometry optimization is a turnkey workflow.
+   X2C-SOC gradients remain the last SOC-gradient gap.
 4. ETS-NOCV — the highest-value bonding-analysis gap for selectivity
    rationalization.
 5. QTAIM.
