@@ -1,0 +1,44 @@
+{
+ "ecp_rows": [
+  {
+   "ecp": "crenbl",
+   "ncore": 78,
+   "ecp_lmax": 3,
+   "nao": 130,
+   "has_ecp_soc": false
+  },
+  {
+   "ecp": "stuttgart_rsc",
+   "ncore": 60,
+   "ecp_lmax": 4,
+   "nao": 149,
+   "has_ecp_soc": false
+  },
+  {
+   "ecp": "stuttgart_dz",
+   "ncore": 78,
+   "ecp_lmax": 4,
+   "nao": 141,
+   "has_ecp_soc": false
+  },
+  {
+   "ecp": "lanl2dz",
+   "ncore": 78,
+   "ecp_lmax": 3,
+   "nao": 98,
+   "has_ecp_soc": false
+  }
+ ],
+ "get_ecp_so": "ValueError: mol has no spin-orbit ECP projectors",
+ "ECPso_ref_max": 0.0,
+ "ecp_gpu_cpu": {
+  "stuttgart_rsc": 3.623767952376511e-13,
+  "crenbl": 1.5640568521104088e-08,
+  "stuttgart_dz": 6.364986895445867e-07,
+  "lanl2dz": 1.809569568689463e-09
+ },
+ "e_scalar": -626.5608003989282,
+ "scf_wall_s": 33.90551257133484,
+ "nao": 149,
+ "converged": true
+}

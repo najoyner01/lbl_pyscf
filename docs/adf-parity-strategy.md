@@ -264,6 +264,20 @@ Separation *selectivity* is rationalized through An–L bond covalency
    solvated `G_tot` finite.  Tests: `hessian/tests/test_fd_hessian.py`.
    → the solvated-SOC ΔG workflow is now implementation-complete for small
    molecules.
+3e. **Stage 2a actinide validation (uranyl UO₂²⁺)** — ⚠️ SCALAR DONE / SOC
+   BLOCKED, 2026-09-09 (`gpu4pyscf/hessian/tests/results/uranyl_soc_2a.md`).
+   Scalar GKS+ECP+PCM+FD-Hessian **validated on uranium**: RKS(PBE0)/ECP60MWB
+   small-core reproduces bare-uranyl r(U=O)=1.679 Å (within ~0.03 Å of CASPT2)
+   and ν₁/ν₂/ν₃ = 1092/181/1183 cm⁻¹ (ν₃ within 6 % of CASPT2, no imaginary
+   modes); SCF needs no convergence aids. Fixed one real GPU bug en route
+   (`gto/ecp.py` — scalar `get_ecp` launched `ECP_cart` on screening-emptied
+   task blocks → CUDA crash for small-core actinide RECPs; one-line guard,
+   commit `0d9a363ad`). **SOC half blocked at data, not code**: this pyscf
+   checkout ships no spin-orbit ECP for any actinide (`has_ecp_soc()` False for
+   U crenbl / stuttgart_rsc / stuttgart_dz / lanl2dz), so the scalar-vs-SO
+   comparison cannot run. `get_ecp_so` raises cleanly on the actinide basis —
+   the SO kernels don't fail, they have nothing to integrate. Unblock = add
+   ECP60MWB_SO for U to pyscf basis data; no gpu4pyscf change needed after that.
 4. ETS-NOCV — the highest-value bonding-analysis gap for selectivity
    rationalization.
 5. QTAIM.
