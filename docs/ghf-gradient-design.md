@@ -10,13 +10,14 @@ Validation to date (A100, `grad/tests/test_ghf_grad.py`):
 - **(b) done** — GHF analytic vs finite difference, OH/sto-3g spin=1 (no SOC,
   `D_αα ≠ D_ββ`, real): `||Δ|| = 1.7e-8`. (Original plan named HI/crenbl; that
   has an even valence-electron closed shell, swapped for OH.)
-- **(c) pending run** — spin-rotation invariance test added
-  (`test_ghf_spin_rotation_invariance`): a global SU(2) rotation of the
-  converged solution activates the imaginary-diagonal (`k_factor=-2`) and
-  `D_αβ` cross (`k_factor=+4`) paths, which (a)/(b) leave at zero. **Until this
-  passes, those two paths — hence every complex/non-collinear/SOC GHF
-  gradient — are unvalidated.** `grad/ghf.py` emits a `logger.warn` when the
-  density has non-negligible `Y`/`D_αβ` blocks.
+- **(c) done** 2026-09-08 — spin-rotation invariance
+  (`test_ghf_spin_rotation_invariance`): global `R_x(θ)`, θ ∈ {0.3, 1.0, 2.0},
+  activates the imaginary-diagonal (`k_factor=-2`) and `D_αβ` cross
+  (`k_factor=+4`) paths, `||g_rot − g_0|| < 1e-8` at every angle. Those two
+  `k_factor`s are now confirmed. The GHF/GKS gradient is validated for scalar
+  **and** non-collinear real-space densities. `grad/ghf.py` still emits a
+  `logger.warn` on non-negligible `Y`/`D_αβ` blocks as a belt-and-braces flag
+  until a true `with_soc=True` FD check exists.
 - **SOC hcore path** (`d ECPso/dR`): raises `NotImplementedError` — needs the
   step-3 SO-ECP gradient integral (`lib/ecp/ecp_so.cu` IP kernel), not built.
 
@@ -241,10 +242,22 @@ does *not* exercise the cross-term or the imaginary-diagonal blocks. The
 on unvalidated footing; a wrong factor there produces a plausible wrong
 gradient for every SOC calculation and nothing else.
 
-Closing that without waiting for SO-ECP integrals: **test (c), spin-rotation
+Closed without waiting for SO-ECP integrals: **test (c), spin-rotation
 invariance** (`test_ghf_spin_rotation_invariance`). Rotating the converged
 solution by a global `R_x(θ)` is an exact symmetry of the spin-free
 Hamiltonian, so the analytic gradient must not move; but the rotation shifts
 density weight into `Y_aa/Y_bb/A_ab/B_ab`, so a wrong `k_factor` on those pairs
-makes `g_rot` drift from `g_0`. Run it on the next GPU session. A genuine
-`with_soc=True` finite-difference check still comes later, with step 3.
+makes `g_rot` drift from `g_0`. **Passed 2026-09-08** (`< 1e-8` at θ = 0.3,
+1.0, 2.0). A genuine `with_soc=True` finite-difference check still comes
+later, with step 3 (the `d ECPso/dR` integral).
+
+### Step 3 — SO-ECP hcore gradient integral (the last piece)
+
+`grad/ghf.py:grad_elec` raises `NotImplementedError` when `mf.with_soc` is
+set: the `⟨i| dU_SO/dR |j⟩` term is missing. This needs an `ip`-type kernel
+alongside the existing `so_cart` in `lib/ecp/ecp_so.cu` — the SO analog of
+`get_ecp_ip` / `loop_ecp_ip` from the scalar ECP gradient work
+([[ecp-gpu-status]]). Once it exists, wire it into `grad_elec` (add to the
+`e1_grad` term, same place scalar `get_ecp_ip` feeds `grad/rhf.py`), drop the
+`NotImplementedError`, and add the `with_soc=True` OH/heavy-atom FD test.
+That completes SOC-in-the-optimization-loop.
