@@ -200,6 +200,28 @@ def _ghf_jk_energy(mf_grad, dm_ghf, verbose=None):
     j_factor = [1.,  0.,  0.,  0.,  0.,  0.,  0.]
     k_factor = [0.,  2., -2.,  2., -2.,  4.,  4.]
 
+    # VALIDATION STATUS (see docs/ghf-gradient-design.md §4):
+    #   tested to FD/machine precision:  J term, and the real diagonal K
+    #     blocks X_aa / X_bb (k_factor=+2) -- covers every real, collinear
+    #     GHF/GKS solution.
+    #   NOT yet FD-validated:  the imaginary diagonal blocks Y_aa / Y_bb
+    #     (k_factor=-2) and the D_alpha,beta cross terms (k_factor=+4).
+    #     These are zero for a real block-diagonal solution, so no existing
+    #     test exercises them.  They switch on for any genuinely complex or
+    #     non-collinear density -- i.e. every SOC calculation.  Warn loudly
+    #     rather than return a silently-unvalidated number.
+    _imag_scale = float(cp.abs(Y_aa).max() + cp.abs(Y_bb).max())
+    _cross_scale = float(cp.abs(A_ab).max() + cp.abs(B_ab).max())
+    if _imag_scale > 1e-8 or _cross_scale > 1e-8:
+        logger.warn(mf,
+            'GHF gradient: density has significant imaginary-diagonal '
+            '(|Y|~%.1e) and/or spin-off-diagonal (|D_ab|~%.1e) blocks. '
+            'The k_factor=-2 / k_factor=+4 gradient paths for these are '
+            'NOT finite-difference validated yet (docs/ghf-gradient-design.md '
+            '§4). Do not trust this gradient for production SOC geometry '
+            'optimization until the non-collinear FD test passes.',
+            _imag_scale, _cross_scale)
+
     vhfopt = mf._opt_gpu.get(None)
     if vhfopt is None:
         vhfopt = mf._opt_gpu[None] = _VHFOpt(mol, mf.direct_scf_tol).build()

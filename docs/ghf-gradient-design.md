@@ -1,7 +1,31 @@
 # GHF nuclear gradient — design
 
-Status: 2026-09-04, design only (not implemented). Step 2 of the SOC-gradient
-roadmap in `docs/adf-parity-strategy.md` §1b.
+Status: **2026-09-08, implemented** — `gpu4pyscf/grad/ghf.py`, merged to
+`gpu-porting`. Step 2 of the SOC-gradient roadmap in
+`docs/adf-parity-strategy.md` §1b.
+
+Validation to date (A100, `grad/tests/test_ghf_grad.py`):
+- **(a) done** — block-diagonal real GHF (UHF MOs embedded) vs `grad/uhf.py`:
+  `||Δ|| = 4.2e-14`.
+- **(b) done** — GHF analytic vs finite difference, OH/sto-3g spin=1 (no SOC,
+  `D_αα ≠ D_ββ`, real): `||Δ|| = 1.7e-8`. (Original plan named HI/crenbl; that
+  has an even valence-electron closed shell, swapped for OH.)
+- **(c) pending run** — spin-rotation invariance test added
+  (`test_ghf_spin_rotation_invariance`): a global SU(2) rotation of the
+  converged solution activates the imaginary-diagonal (`k_factor=-2`) and
+  `D_αβ` cross (`k_factor=+4`) paths, which (a)/(b) leave at zero. **Until this
+  passes, those two paths — hence every complex/non-collinear/SOC GHF
+  gradient — are unvalidated.** `grad/ghf.py` emits a `logger.warn` when the
+  density has non-negligible `Y`/`D_αβ` blocks.
+- **SOC hcore path** (`d ECPso/dR`): raises `NotImplementedError` — needs the
+  step-3 SO-ECP gradient integral (`lib/ecp/ecp_so.cu` IP kernel), not built.
+
+Implementation note that diverged from this doc: the multi-dm kernel
+(`RYS_per_atom_jk_ip1_multidm`) normalizes per pair differently from the
+single-dm kernel — self-pair `[D,D]` with `k_factor=f` → `−(f/2)·d/dR
+Tr[D·K(D)]`; cross-pair `[D1,D2]` → `−(f/4)·d/dR Tr[D1·K(D2)]`. The `k_factor`
+column in `_ghf_jk_energy` (`[·, 2, -2, 2, -2, 4, 4]`) is set accordingly; the
+`+2`/real-diagonal choice is the one (a)/(b) confirm.
 
 No CPU or GPU reference exists anywhere in PySCF/gpu4pyscf for this (no
 `grad/ghf.py` in either tree). This doc works the formulas out from first
@@ -207,3 +231,20 @@ workflow the user would trust for actinide research until both pass — same
 discipline that caught the SO-ECP factor-of-two and the PBC antisymmetric-sign
 question earlier in this project, both of which *did* need the second,
 harder check to surface.
+
+### 5.1 Update 2026-09-08 — what actually happened
+
+Implemented; (a) and (b) pass. But (b)'s molecule (OH, no SOC) converges to a
+**real block-diagonal** solution, so — exactly as this section warned — it
+does *not* exercise the cross-term or the imaginary-diagonal blocks. The
+`k_factor=-2` and `k_factor=+4` paths in `_ghf_jk_energy` are therefore still
+on unvalidated footing; a wrong factor there produces a plausible wrong
+gradient for every SOC calculation and nothing else.
+
+Closing that without waiting for SO-ECP integrals: **test (c), spin-rotation
+invariance** (`test_ghf_spin_rotation_invariance`). Rotating the converged
+solution by a global `R_x(θ)` is an exact symmetry of the spin-free
+Hamiltonian, so the analytic gradient must not move; but the rotation shifts
+density weight into `Y_aa/Y_bb/A_ab/B_ab`, so a wrong `k_factor` on those pairs
+makes `g_rot` drift from `g_0`. Run it on the next GPU session. A genuine
+`with_soc=True` finite-difference check still comes later, with step 3.

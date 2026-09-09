@@ -23,9 +23,15 @@ Test (b):  §4.2 of docs/ghf-gradient-design.md
     Analytic gradient must match finite difference (±1e-4 bohr central)
     to ≤ 1e-6.  This exercises K_αα and K_ββ diagonal blocks.
 
-    NOTE: The D_αβ ≠ 0 cross-term test (§4.3) requires SO-ECP gradient
-    integrals (step 3 of the SOC roadmap) which are not yet implemented.
-    Once step 3 lands, add test_ghf_grad_soc_fd() here.
+Test (c):  §4.3 of docs/ghf-gradient-design.md
+    Spin-rotation invariance.  A global SU(2) rotation of the converged
+    solution activates the imaginary-diagonal (k_factor=-2) and D_αβ cross
+    (k_factor=+4) gradient paths that (a)/(b) leave at zero, and the analytic
+    gradient must stay put.  This closes the non-collinear gap without needing
+    SO-ECP gradient integrals.
+
+    Still pending once SO-ECP IP integrals (step 3) land: a true with_soc=True
+    finite-difference check.
 """
 
 import numpy as np
@@ -170,6 +176,52 @@ class TestGHFGrad(unittest.TestCase):
         from gpu4pyscf.grad.ghf import Gradients
         grad_obj = mf.nuc_grad_method()
         self.assertIsInstance(grad_obj, Gradients)
+
+    # -----------------------------------------------------------------------
+    # Test (c): §4.3 — spin-rotation invariance exercises the imaginary
+    # diagonal (k_factor=-2) and D_αβ cross (k_factor=+4) code paths WITHOUT
+    # needing SO-ECP gradient integrals.
+    #
+    # A global SU(2) spin rotation is an exact symmetry of the spin-free
+    # Hamiltonian, so it leaves the nuclear gradient unchanged.  Rotating the
+    # converged block-diagonal solution about the x-axis moves density weight
+    # from X_aa/X_bb into Y_aa/Y_bb/A_ab/B_ab, activating exactly the paths
+    # that tests (a)/(b) leave at zero.  If k_factor=-2 or k_factor=+4 were
+    # wrong, the rotated analytic gradient would drift from the unrotated one.
+    # -----------------------------------------------------------------------
+
+    def test_ghf_spin_rotation_invariance(self):
+        """Analytic gradient is invariant under a global spin rotation."""
+        import cupy as cp
+        mol = _ghf_mol('O 0 0 0; H 0 0 1.8', 'sto-3g', spin=1)
+        mf = _run_ghf(mol, with_soc=False)
+        g0 = mf.nuc_grad_method().kernel()
+
+        nso = mf.mo_coeff.shape[0]
+        nao = nso // 2
+        C = cp.asarray(mf.mo_coeff).astype(cp.complex128)
+
+        for theta in (0.3, 1.0, 2.0):
+            c, s = np.cos(theta / 2), np.sin(theta / 2)
+            Crot = cp.empty_like(C)
+            Crot[:nao] = c * C[:nao] - 1j * s * C[nao:]      # R_x(theta)
+            Crot[nao:] = -1j * s * C[:nao] + c * C[nao:]
+
+            from gpu4pyscf.scf import ghf as gpu_ghf
+            mfr = gpu_ghf.GHF(mol)
+            mfr.direct_scf_tol = 1e-14
+            mfr.mo_coeff  = Crot
+            mfr.mo_energy = cp.asarray(mf.mo_energy)
+            mfr.mo_occ    = cp.asarray(mf.mo_occ)
+            mfr.converged = True
+            mfr._opt_gpu  = {}
+
+            gr = mfr.nuc_grad_method().kernel()
+            err = np.linalg.norm(gr - g0)
+            print(f'\n[test_c] theta={theta:.2f}  ||g_rot − g0|| = {err:.3e}')
+            self.assertLess(err, 1e-8,
+                f'spin-rotation broke the gradient at theta={theta}: '
+                f'err={err:.3e} -- k_factor=-2 or k_factor=+4 path is wrong')
 
     # -----------------------------------------------------------------------
     # Test (b): §4.2 — open-shell GHF finite difference (D_αα ≠ D_ββ)
