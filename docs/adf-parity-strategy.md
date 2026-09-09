@@ -240,6 +240,16 @@ Separation *selectivity* is rationalized through An–L bond covalency
    `mf.reset()` across optimizer steps (it is in `GHF._keys`), so SOC genuinely
    shifts the minimum (HI: SOC vs no-SOC r(H–I) differ by 2.7e-3 Å at GHF).
    Tests: `grad/tests/test_soc_geomopt.py`. Not yet exercised on an actinide.
+3c. ~~SOC + PCM/SMD compose (solvated SOC ΔG and geometry optimization)~~ —
+   ✅ DONE 2026-09-09 (`docs/ghf-gradient-design.md` §5.5). `scf.GHF(mol).PCM()`
+   / `.SMD()` and `dft.GKS(mol, xc=...).PCM()` / `.SMD()` now run SCF **and**
+   analytic nuclear gradients, with `with_soc=True`. The reaction field is
+   spin-independent: gpu4pyscf reduces the 2-component DM to `Re(D_aa+D_bb)` at
+   the solvent boundary (`solvent/_attach_solvent.py:_spin_sum_dm`) and adds the
+   potential block-diagonally to the 2c Fock. FD-validated (GHF/GKS ± SOC,
+   PCM & SMD: `‖ana−FD‖ ≲ 3e-8`); collinear reduction to UHF/UKS+PCM exact
+   (`‖Δ‖ < 1e-12`); solvated GKS+SOC geometry optimization of HI converges.
+   ΔG_solv(HI) = −2.2 kcal/mol. Tests: `solvent/tests/test_pcm_soc.py`.
 4. ETS-NOCV — the highest-value bonding-analysis gap for selectivity
    rationalization.
 5. QTAIM.

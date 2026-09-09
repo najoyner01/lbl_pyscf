@@ -160,11 +160,14 @@ class GKS(rks.KohnShamDFT, GHF):
     energy_elec = rks.RKS.energy_elec
     to_hf = NotImplemented
 
-    def nuc_grad_method(self):
+    def Gradients(self):
+        # Defined as Gradients (not nuc_grad_method) so that solvent-attached
+        # GKS routes through hf.SCF.nuc_grad_method -> self.Gradients(), letting
+        # SCFWithSolvent.Gradients (earlier in the MRO) wrap it. See
+        # gpu4pyscf/solvent/_attach_solvent.py.
         from gpu4pyscf.grad import gks as gks_grad
         return gks_grad.Gradients(self)
-    Gradients = nuc_grad_method
-    
+
     def to_cpu(self):
         mf = gks.GKS(self.mol, xc=self.xc)
         utils.to_cpu(self, out=mf)

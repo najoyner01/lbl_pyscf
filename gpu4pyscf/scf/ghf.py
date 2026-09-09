@@ -151,11 +151,9 @@ class GHF(hf.SCF):
     get_grad = return_cupy_array(ghf_cpu.GHF.get_grad)
     energy_elec = hf.energy_elec
 
-    def PCM(self, *args, **kwargs):
-        '''
-        Solvent models are not yet implemented for GHF.
-        '''
-        raise NotImplementedError('Solvent models are not implemented for GHF.')
+    # PCM / SMD are grafted on in gpu4pyscf/solvent/{pcm,smd}.py (as for RHF/UHF).
+    # The reaction field is spin-independent: it couples to Re(D_aa + D_bb) and
+    # the returned potential is added block-diagonally to the 2-component Fock.
 
     def get_init_guess(self, mol=None, key='minao', **kwargs):
         dm = hf.RHF.get_init_guess(self, mol, key, **kwargs)

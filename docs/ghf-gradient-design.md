@@ -388,3 +388,63 @@ Caveats:
 
 Tests: `grad/tests/test_soc_geomopt.py`.  Not yet exercised on an actinide;
 `geomeTRIC` and `mcfun` must be importable.
+
+### 5.5 Update 2026-09-09 — solvated SOC (PCM / SMD compose)
+
+`scf.GHF(mol).PCM()` / `.SMD()` and `dft.GKS(mol, xc=...).PCM()` / `.SMD()`
+now run SCF **and** analytic nuclear gradients, including with
+`mf.with_soc = True`.  Actinide separation ΔG is computed in solution, so this
+is the last plumbing step for a usable solvated-SOC workflow.
+
+**Physics.**  The reaction field is spin-independent — it couples only to the
+number density `ρ = Re(D_αα + D_ββ)` and the nuclear charges.  So:
+
+- SCF: reduce the `2nao×2nao` spinor DM to `ρ` (`nao×nao` real) before the
+  solvent kernel; add the returned `v_solvent` (`nao×nao`) into **both**
+  diagonal spin blocks of the `2nao×2nao` Fock (block-diagonal, identical,
+  zero off-diagonal).
+- gradient: `WithSolventGrad.kernel` feeds the same `ρ` to
+  `grad_qv`/`grad_solver`/`grad_nuc`; the solvent nuclear gradient is a plain
+  additive `[natm,3]` term, independent of the SOC / K / XC parts.
+- SMD CDS is a pure SASA geometric term (`_attach_solvent.energy_elec` +
+  `grad/smd.py`), spin-free by construction.
+
+**Changes (all gpu4pyscf-side, minimal).**
+
+- `scf/ghf.py`: removed the `PCM` `NotImplementedError`.  `solvent/pcm.py`,
+  `solvent/smd.py`: `scf.ghf.GHF.PCM/SMD = *_for_scf` (GKS inherits).
+- `solvent/_attach_solvent.py`: `_spin_sum_dm(dm, nao)` (RHF/UHF/GHF-GKS →
+  spin-summed real DM) and `_expand_v_solvent_2c`; `SCFWithSolvent.get_veff`
+  reduces the DM and block-diagonalises `v_solvent` when the base is 2-component
+  (`isinstance(mf, ghf.GHF)`).
+- `solvent/grad/{pcm,smd}.py`: `WithSolventGrad.kernel` calls `_spin_sum_dm`
+  (was a UHF-only `dm[0]+dm[1]`).
+- `dft/gks.py`: `GKS` now defines `Gradients` (not `nuc_grad_method`), so a
+  solvent-attached GKS routes through `hf.SCF.nuc_grad_method → self.Gradients()`
+  and `SCFWithSolvent.Gradients` (earlier in the MRO) wraps it.  **This was the
+  one real bug**: without it `mf.nuc_grad_method()` on a `GKS().PCM()` returned
+  the bare vacuum gradient (no solvent term).
+
+**Recommended call.**
+
+    mf = dft.GKS(mol, xc='pbe0').PCM()     # or .SMD(); GHF works the same
+    mf.with_soc = True
+    mf.spin_samples = 50
+    mf.kernel()                            # ΔG_solv from mf.e_tot − gas e_tot
+    g = mf.nuc_grad_method(); g.grid_response = True
+    de = g.kernel()
+    mol_eq = optimize(g.as_scanner(), maxsteps=20)   # solvated SOC geom-opt
+
+**Validated (A100).**
+
+| gate | check | result |
+|---|---|---|
+| V1 | real block-diagonal `GHF/GKS(pbe0).PCM()` (UHF/UKS MOs embedded) vs `UHF/UKS.PCM()`, O₂ triplet | dE = 1e-13, ‖dGrad‖ = 7e-14 (GHF) / 7e-13 (GKS) |
+| V2 | FD, no SOC — `GHF(HF).PCM()`, `GKS(HF,pbe0).PCM()` (def2-svp), analytic vs central FD of `e_tot` | ‖ana−FD‖ = 1.4e-8 (GHF) / 2.1e-8 (GKS) |
+| V3 | FD, **with SOC** — `GKS(HI/CRENBL, pbe0).PCM(); with_soc=True`, `spin_samples=50`, `grid_response=True` (SOC hcore + XC + scaled-K + PCM in one gradient) | ‖ana−FD‖ = 3.0e-8 |
+| V4 | V2/V3 with `.SMD()` (adds CDS gradient) | ‖ana−FD‖ = 1.3e-8 (GHF+SMD) / 3.0e-8 (GKS+SMD+SOC) |
+| V5 | `optimize(g.as_scanner())` for `GKS(HI, pbe0).PCM(); with_soc=True` | converged, r(H–I) = 1.6425 Å, fresh ‖grad‖ = 2.3e-6 |
+| V6 | ΔG_solv(HI, GHF+SOC) sign/size; existing `solvent/tests/` (RHF/UHF/RKS/UKS PCM+SMD grad) | ΔG = −0.00349 Eh = **−2.19 kcal/mol**; 61/61 solvent tests pass |
+
+Tests: `solvent/tests/test_pcm_soc.py`.  Range-separated hybrids and MGGA in
+GKS still raise `NotImplementedError` (unchanged from §5.3).

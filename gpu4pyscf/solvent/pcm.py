@@ -58,6 +58,7 @@ from gpu4pyscf import scf
 from gpu4pyscf import tdscf
 scf.hf.RHF.PCM = pcm_for_scf
 scf.uhf.UHF.PCM = pcm_for_scf
+scf.ghf.GHF.PCM = pcm_for_scf   # also covers dft.GKS (GKS is-a GHF)
 tdscf.rhf.TDBase.PCM = pcm_for_tdscf
 
 def natm_without_ghost(mol):

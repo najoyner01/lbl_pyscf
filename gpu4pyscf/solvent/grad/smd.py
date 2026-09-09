@@ -81,14 +81,14 @@ class WithSolventGrad:
         return smd.make_grad_object(grad_method)
 
     def kernel(self, *args, dm=None, atmlst=None, **kwargs):
+        from gpu4pyscf.solvent._attach_solvent import _spin_sum_dm
         logger.debug(self, 'Compute gradients from solutes')
         self.de_solute  = super().kernel(*args, **kwargs)
 
-        dm = kwargs.pop('dm', None)
         if dm is None:
             dm = self.base.make_rdm1()
-        if dm.ndim == 3:
-            dm = dm[0] + dm[1]
+        # RHF (nao,nao) / UHF (2,nao,nao) / GHF-GKS (2nao,2nao) -> Re(D_aa+D_bb)
+        dm = _spin_sum_dm(dm, self.mol.nao)
         logger.debug(self, 'Compute gradients from solvents')
         self.de_solvent = self.base.with_solvent.grad(dm)
         self.de_cds     = get_cds(self.base.with_solvent)

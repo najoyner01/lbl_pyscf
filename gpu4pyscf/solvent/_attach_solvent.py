@@ -15,9 +15,43 @@
 import numpy, cupy
 from pyscf import lib
 from pyscf.lib import logger
+from cupyx.scipy.linalg import block_diag
 from gpu4pyscf.lib.cupy_helper import tag_array, pack_tril
 from gpu4pyscf import scf
 from gpu4pyscf.scf.hf_lowmem import WaveFunction
+
+
+def _is_2component(mf):
+    '''True for GHF / GKS (2-component spinor) SCF objects, including the
+    solvent-attached mixins.'''
+    from gpu4pyscf.scf import ghf
+    return isinstance(mf, ghf.GHF)
+
+
+def _spin_sum_dm(dm, nao):
+    '''Reduce a density matrix to the spin-summed real ``nao x nao`` form the
+    (spin-independent) reaction field couples to:
+
+      * RHF/RKS ``(nao, nao)``          -> unchanged
+      * UHF/UKS ``(2, nao, nao)``       -> ``dm[0] + dm[1]``
+      * GHF/GKS ``(2*nao, 2*nao)`` cplx -> ``Re(D_aa + D_bb)``
+    '''
+    dm = cupy.asarray(dm)
+    if dm.ndim == 3:
+        return dm[0] + dm[1]
+    if dm.ndim == 2 and dm.shape[-1] == 2 * nao:
+        return (dm[:nao, :nao] + dm[nao:, nao:]).real
+    return dm
+
+
+def _expand_v_solvent_2c(v_solvent, nao):
+    '''Expand an ``nao x nao`` reaction-field potential to the block-diagonal
+    ``2*nao x 2*nao`` form added to the 2-component Fock (identical in each
+    spin block, zero off-diagonal).'''
+    if getattr(v_solvent, 'ndim', 0) == 2 and v_solvent.shape[-1] == nao:
+        return block_diag(v_solvent, v_solvent)
+    return v_solvent
+
 
 def _for_scf(mf, solvent_obj, dm=None):
     '''Add solvent model to SCF (HF and DFT) method.
@@ -31,6 +65,8 @@ def _for_scf(mf, solvent_obj, dm=None):
         return mf
 
     if dm is not None:
+        if _is_2component(mf):
+            dm = _spin_sum_dm(dm, mf.mol.nao)
         solvent_obj.e, solvent_obj.v = solvent_obj.kernel(dm)
         solvent_obj.frozen = True
 
@@ -77,6 +113,8 @@ class SCFWithSolvent(_Solvation):
     def get_veff(self, mol=None, dm_or_wfn=None, *args, **kwargs):
         veff = super().get_veff(mol, dm_or_wfn, *args, **kwargs)
         with_solvent = self.with_solvent
+        twoc = _is_2component(self)
+        nao = self.mol.nao
         if not with_solvent.frozen:
             if dm_or_wfn is None:
                 dm = self.make_rdm1()
@@ -84,8 +122,13 @@ class SCFWithSolvent(_Solvation):
                 dm = dm_or_wfn.make_rdm1()
             else:
                 dm = dm_or_wfn
+            if twoc:
+                dm = _spin_sum_dm(dm, nao)
             with_solvent.e, with_solvent.v = with_solvent.kernel(dm)
         e_solvent, v_solvent = with_solvent.e, with_solvent.v
+        if twoc:
+            # reaction field couples spin-independently -> block-diagonal Fock
+            v_solvent = _expand_v_solvent_2c(v_solvent, nao)
         if veff.shape[-1] != v_solvent.shape[-1]:
             # lowmem mode, only lower triangular part of Fock matrix is stored
             nao = v_solvent.shape[-1]

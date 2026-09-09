@@ -38,6 +38,7 @@ def smd_for_scf(mf, solvent_obj=None, dm=None, solvent='water'):
 from gpu4pyscf import scf
 scf.hf.RHF.SMD = smd_for_scf
 scf.uhf.UHF.SMD = smd_for_scf
+scf.ghf.GHF.SMD = smd_for_scf   # also covers dft.GKS (GKS is-a GHF)
 hartree2kcal = 627.509451
 
 # database from https://comp.chem.umn.edu/solvation/mnsddb.pdf
