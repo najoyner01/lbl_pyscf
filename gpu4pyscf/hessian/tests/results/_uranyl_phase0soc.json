@@ -1,0 +1,26 @@
+{
+ "sph": {
+  "so_l": [
+   1,
+   2,
+   3,
+   4
+  ],
+  "ecpso_max": 7.904787935331115e-14,
+  "scalar_delta": 0.0,
+  "soc1e_max": 3.952393967665557e-14,
+  "has_ecp_soc": true
+ },
+ "cart": {
+  "so_l": [
+   1,
+   2,
+   3,
+   4
+  ],
+  "ecpso_max": 7.904787935331115e-14,
+  "scalar_delta": 0.0,
+  "soc1e_max": 3.952393967665557e-14,
+  "has_ecp_soc": true
+ }
+}

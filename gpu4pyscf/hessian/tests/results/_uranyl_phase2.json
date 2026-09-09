@@ -1,0 +1,14 @@
+{
+ "r": 1.6790915195709275,
+ "e_scalar": -626.5722418971982,
+ "e_soc_plain": -631.6495605065659,
+ "conv_plain": true,
+ "e_soc_lshift1.0": -631.6495605060732,
+ "conv_lshift1.0": true,
+ "e_soc_lshift0.5": -631.6495605065682,
+ "conv_lshift0.5": true,
+ "e2_soc_full": -5.692767003393884,
+ "e2_soc_frontier": -0.10186434371338261,
+ "n_front_occ": 7,
+ "n_front_vir": 14
+}

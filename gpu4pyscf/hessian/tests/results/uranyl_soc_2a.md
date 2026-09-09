@@ -1,209 +1,227 @@
 # Stage 2a — actinide validation on uranyl (UO₂²⁺)
 
-**Status: COMPLETE.**  Scalar GKS + ECP machinery validated on a real actinide;
-the spin-orbit half is **blocked by missing basis-set data**, not by a bug.
+**Status: COMPLETE.**
+Scalar GKS + ECP machinery validated on uranium.  The actinide **spin-orbit
+ECP integrals** are present and validated to ~1e-13 (incl. the f/g projectors
+the Na–Bi sweep never stressed).  A **self-consistent** GKS + SO-ECP geometry /
+frequency run **cannot** be done for uranyl — not for lack of data or a code
+bug, but because the only available actinide SO-ECP (60-core `ecpds60mwbso`) is
+variationally unstable in 2-component SCF.  Details below.
 
 Driver: `uranyl_soc_2a.py` (this directory).  A100-PCIE-40GB, pyscf 2.14.0,
-cupy 13.4.1, commit `0d9a363ad` (branch `uranyl-2a` off `origin/gpu-porting`
-= `319a3a48a`).
+cupy 13.4.1, branch `uranyl-2a` off `origin/gpu-porting` (= `319a3a48a`).
 
 ## Headline
 
-1. **SOC comparison is blocked — no actinide spin-orbit ECP in this pyscf.**
-   `mol.has_ecp_soc()` is `False` for U with `crenbl`, `stuttgart_rsc`,
-   `stuttgart_dz`, `lanl2dz` — all are 2-column scalar-relativistic RECPs.  The
-   SO-ECP sweep (`test_ecp_sweep.py`) only ever covered Na–Bi.  Phase 2 (SOC
-   geometry) and the SOC half of Phase 3 therefore **cannot be run**.  This is a
-   data gap: `get_ecp_so` correctly raises `mol has no spin-orbit ECP
-   projectors`, `mol.intor('ECPso')` returns exact zeros, and neither the SCF
-   nor the integral driver crashes on an actinide basis — there is simply
-   nothing to integrate.
+1. **The actinide SO-ECP *does* ship in this pyscf** — as `ecpds60mwbso`
+   (`pyscf/gto/basis/soecp/ECPDS60MWBSO.dat`), covering **Ac–Lr**.  It is the
+   ECP60MWB-**SO** set (Küchle 1994 / Cao 2003) — the spin-orbit partner of the
+   scalar `stuttgart_rsc` (ECP60MWB) that Stage 2a already used.  The earlier
+   "no actinide SO-ECP" conclusion came from trying only the scalar name.
+   With `ecp={'U':'ecpds60mwbso'}`: `mol.has_ecp_soc()` → **True**, SO
+   projectors l = 1,2,3,4; the AREP (scalar) columns are **byte-identical** to
+   `stuttgart_rsc` (Δ = 0.0).  New accessor: `gpu4pyscf/gto/actinide_ecp.py`
+   (a thin documented wrapper over the vendored data — no parameter
+   re-transcription).
 
-2. **A real GPU bug was found and fixed** — `gpu4pyscf/gto/ecp.py`, committed
-   separately as `0d9a363ad` (one line).  Scalar `get_ecp` launched the
-   `ECP_cart` CUDA kernel even for a screening-emptied `(l_i, l_j, l_ecp)` task
-   block → `CUDA Error: invalid configuration argument` →
-   `RuntimeError: ECP CUDA kernel failed`.  Triggered by the small-core U
-   `stuttgart_rsc` ECP with `def2-SVP`/`def2-TZVP` oxygen (the first `s-s-s`
-   block screens to zero).  The `so` / `ip` / `so_ip` loops in the same file
-   already guarded with `if len(task) == 0: continue`; the scalar loop did not.
-   After the fix, `get_ecp` for small-core uranyl matches CPU
-   `mol.intor('ECPscalar')` to **3.6e-13**; the large-core RECPs (which never
-   hit the empty block) are byte-for-byte unchanged.
+2. **gpu4pyscf's SO-ECP kernel is correct for the actinide f (l=3) and g (l=4)
+   projectors.**  `get_ecp_so` vs `mol.intor('ECPso')`, U/Np/Pu/Th/Am,
+   spherical **and** cartesian: **max |Δ| = 7.9e-14** (target 1e-9).
+   `get_soc_1e` vs the pyscf spinor assembly: **4.0e-14**.  The angular table
+   `lib/ecp/so_ang_matrix.cu` (`_l_op`, l = 0..4) and `ECP_LMAX = 4`
+   (`lib/ecp/ecp.h`) already cover l ≤ 4 — **no regeneration, no libgecp
+   rebuild.**  `gto/tests/test_actinide_ecp.py`: **7 passed**.
 
-3. **Scalar actinide machinery works and reproduces the literature.**
-   RKS(PBE0), U `stuttgart_rsc` (ECP60MWB small-core, 32 valence e⁻) +
-   O `def2-TZVP`, 149 basis functions:
+3. **A self-consistent 2-component GKS + SO-ECP calculation on uranyl is
+   variationally unstable.**  Seeded from the converged scalar RKS density
+   (the `minao` guess diverges outright), GKS + `ecpds60mwbso` converges — but
+   to **−631.6496 Eh, 5.077 Eh *below* the scalar −626.5722 Eh**.  A 5-Hartree
+   "SOC shift" on a closed-shell 5f⁰ ion is unphysical (the real effect is
+   ~0.01–0.1 Eh).  Every SCF strategy available for gpu4pyscf GKS (plain DIIS,
+   level shift 0.2/0.5/1.0, ramped) lands in the same collapsed state; SOSCF is
+   `NotImplemented` for GKS.
+   * **Not a gpu4pyscf bug.**  One-shot GKS+SOC `hcore` / `veff` / `energy`
+     from a fixed DM match pyscf CPU to **1e-12**.  The collapse also
+     reproduces in ordinary Rayleigh–Schrödinger PT2 (full-space
+     E₂(SOC) ≈ −5.7 Eh).
+   * **Root cause: the ECP.**  The 60-core actinide set carries the U 5s5p5d
+     6s6p semicore explicitly.  Its P/D spin-orbit projectors (coefficients
+     ≈ −60, +15) were parameterised for a *restricted-active-space spin-orbit
+     CI*, not for a variational 2c-SCF one-electron operator.  The deeply
+     bound (ε ≈ −8 Eh), strongly SO-split **6p semicore** over-couples through
+     the (unbounded-below) semilocal SO projector.  Restricting the same PT2 to
+     the frontier valence window gives a **physical E₂(SOC) ≈ −0.10 Eh**
+     (~2.8 kcal/mol); the top full-space contributors are exactly the ε ≈ −8 Eh
+     (6p) orbitals.
+   * There is **no large-core actinide SO-ECP** in this pyscf to move 6p into
+     the core (only `ECPDS60MWBSO` covers actinides).
 
-   | quantity | this work | literature (bare UO₂²⁺) | agreement |
-   |---|---|---|---|
-   | r(U=O) | **1.6791 Å** | CASPT2 1.71; hybrid-DFT 1.68–1.70 | ≈0 vs hybrid DFT, −0.03 Å vs CASPT2 — inside the 0.02–0.05 Å target |
-   | ν₁ (σg, sym str) | **1092 cm⁻¹** | CASPT2 ~1120; DFT ~1040–1130 | −3 % vs CASPT2 |
-   | ν₂ (πu, bend, ×2) | **181 cm⁻¹** | ~150–190 | in range, real (bend > 0) |
-   | ν₃ (σu, asym str) | **1183 cm⁻¹** | CASPT2 ~1260; DFT ~1100–1200 | −6 % vs CASPT2 — inside the 5–10 % target |
+4. Scalar results (unchanged from the first pass; the `gto/ecp.py` fix
+   `0d9a363ad` this study depends on is committed separately):
+   r(U=O) = **1.6791 Å**, ν₁/ν₂/ν₃ = **1092 / 181 / 1183 cm⁻¹**, no imaginary
+   modes, SCF needs no aids.
 
-   No imaginary modes → a true minimum.  SCF converged at every geometry with
-   **no convergence aids** (default `minao` guess, no level shift, no SOSCF).
+## Basis / ECP
 
-## Basis / ECP chosen
-
-| | choice | why |
+| | choice | note |
 |---|---|---|
-| U ECP | `stuttgart_rsc` (ECP60MWB, `ncore=60`, `l_max=g`) | the standard **small-core** relativistic RECP for actinides; the 5s5p5d/6s6p semicore is explicit.  Needs the `ecp.py` fix above. |
-| U basis | `stuttgart_rsc` (matched valence) | paired with the ECP |
-| O basis | `def2-TZVP` (all-electron) | task spec; `def2-SVP` also exercised in the integral check |
-| — | **no SO projectors available for any actinide** | see headline 1 |
+| U ECP, scalar | `stuttgart_rsc` (ECP60MWB, `ncore=60`) | Stage 2a scalar validation |
+| U ECP, +SO | **`ecpds60mwbso`** (ECP60MWB-SO, `ncore=60`) | same AREP (Δ=0), adds SO projectors l = 1–4 |
+| U basis | `stuttgart_rsc` valence | matched |
+| O basis | `def2-TZVP` | task spec |
+| accessor | `gpu4pyscf.gto.actinide_ecp.get_actinide_so_ecp('U')` → `'ecpds60mwbso'` | + `actinide_basis`, `source`, `has_actinide_so_ecp`; covers Th, Pa, U, Np, Pu, Am, Cm (and the rest of Ac–Lr) |
 
-Large-core alternatives (`crenbl`, `stuttgart_dz`, `lanl2dz`, all `ncore≈78`)
-run without the fix but are cruder for U=O covalency, and none carry SO
-projectors either.
+Provenance (module docstring, per element): W. Küchle, M. Dolg, H. Stoll,
+H. Preuss, *J. Chem. Phys.* **100**, 7535 (1994) [ECP + SO potential];
+X. Cao, M. Dolg, H. Stoll, *J. Chem. Phys.* **118**, 487 (2003) [valence basis].
+Both are reproduced verbatim in the header of `soecp/ECPDS60MWBSO.dat`.
 
-## Phase 0 — prerequisites
+## Phase 0-SOC — SO-ECP prerequisites
 
-**0a — U ECP enumeration:**
+| check | sph | cart |
+|---|---|---|
+| `mol.has_ecp_soc()` | True | True |
+| SO projector l values | 1, 2, 3, 4 | 1, 2, 3, 4 |
+| `‖get_ecp_so − mol.intor('ECPso')‖_max` | **7.9e-14** | **7.9e-14** |
+| `‖get_soc_1e − pyscf spinor assembly‖_max` | **4.0e-14** | 4.0e-14 |
+| `‖get_ecp(ecpds60mwbso) − get_ecp(stuttgart_rsc)‖_max` (AREP unchanged) | **0.0** | 0.0 |
 
-| U ECP | `ncore` | ECP `l_max` | nao (uranyl, def2-TZVP O) | `has_ecp_soc()` |
-|---|---:|---:|---:|:---:|
-| `crenbl` | 78 (large) | 3 (f) | 130 | **False** |
-| `stuttgart_rsc` (ECP60MWB) | 60 (small) | 4 (g) | 149 | **False** |
-| `stuttgart_dz` | 78 (large) | 4 (g) | 141 | **False** |
-| `lanl2dz` | 78 (large) | 3 (f) | 98 | **False** |
+`get_ecp_so` vs `mol.intor('ECPso')`, wider actinide set (probe basis, r = 2.1 Å
+U–F): **U 7.9e-14, Np 7.5e-14, Pu 9.0e-14, Th 5.6e-14, Am 9.9e-14** — sph and
+cart identical to 2 sig figs.
 
-No SO projectors for any actinide → SOC comparison blocked.
+**Angular machinery (Phase 2, step 2 of the spec):** the SO projectors run
+l = 1..4.  `lib/ecp/so_ang_matrix.cu` is generated for l = 0..4
+(`_l_op_s..._l_op_g`, `*_l_op[5]`), `ECP_LMAX` in `lib/ecp/ecp.h` is 4 —
+**both already cover the actinide f/g SO projectors**, so no
+`generate_so_ang_matrix.py` re-run and no `libgecp` rebuild were needed.  (The
+Na–Bi sweep did exercise l = 3,4 SO projectors via `ecpds28mwbso`/Ce and
+`ecpds60mdfso`/Bi; what was untested before this study is an actinide 60-core
+*radial* SO parameter set.)
 
-**0b — SO machinery on the actinide basis (no crash):**
-`get_ecp_so(mol)` raises `ValueError: mol has no spin-orbit ECP projectors`;
-`mol.intor('ECPso')` returns exact zeros (shape `(3, 149, 149)`, `max|·| = 0`).
+**Physical anchor (Phase 2, step 5).**  Projecting `get_ecp_so` onto a single
+U 5f radial function and diagonalising the 14×14 spinor SO operator gives the
+exact L·S level pattern — a 6-fold (j = 5/2) level below an 8-fold (j = 7/2)
+level with eigenvalue ratio **−2 : +3/2** — confirming the angular operator.
+The magnitude ζ_5f is radial-shape dependent (6 → 6300 cm⁻¹ across trial
+exponents 0.3 → 2.0); a physically sized 5f (exp ≈ 1.2) gives ζ_5f ≈ 1300 cm⁻¹,
+bracketing the literature ζ_5f(U) ≈ 1900–2200 cm⁻¹.  A matched-core control on
+iodine (`crenbl`, the p-block SO-ECP that *is* variationally stable) gives
+ζ_5p ≈ 5.9×10³ cm⁻¹ vs the experimental ²P₃/₂–²P₁/₂ ⇒ ζ_5p ≈ 5.1×10³ cm⁻¹.
+The SO-ECP integrals are physically scaled; the uranyl problem (headline 3) is
+the *semicore in the valence space under a variational treatment*, not the
+integrals.
 
-**0b — scalar ECP GPU vs CPU `mol.intor('ECPscalar')`** (after the `ecp.py` fix,
-O = def2-SVP):
+## Phase 1 — scalar geometry (RKS/PBE0)   [unchanged]
 
-| U ECP | `|get_ecp − ECPscalar|_max` |
-|---|---:|
-| `stuttgart_rsc` (small-core) | **3.6e-13** (was: kernel crash) |
-| `crenbl` | 1.6e-8 |
-| `stuttgart_dz` | 6.4e-7 |
-| `lanl2dz` | 1.8e-9 |
-
-(The large-core diffs of 1e-6..1e-9 are the pre-existing GPU-vs-CPU radial-
-quadrature agreement for these RECPs — unchanged by the fix, well inside SCF
-tolerance.)
-
-**0c — scalar RKS(PBE0) SCF:** `stuttgart_rsc` U / `def2-TZVP` O, 149 BF →
-**converged**, `e_tot = −626.56080040`, **34 s**, no convergence aids.
-
-**0d — SOC SCF:** N/A (no SO-ECP).
-
-## Phase 1 — scalar geometry (RKS/PBE0)
-
-`optimize(mf, convergence_grms=1e-4, convergence_gmax=2e-4)`, geomeTRIC, which
-picks `LinearAngle` internal coordinates (recognises the linear O–U–O).
+`optimize(mf, convergence_grms=1e-4, convergence_gmax=2e-4)`, geomeTRIC
+(LinearAngle internal coords).
 
 | | value |
 |---|---|
-| **r(U=O)** | **1.67909 Å** (both bonds; symmetric to 7e-7 Å) |
-| **O=U=O angle** | **180.000°** |
+| **r(U=O)** | **1.67909 Å** (both bonds, symmetric to 7e-7 Å) |
+| **O=U=O** | **180.000°** |
 | steps / wall | 5 / 202 s |
-| E(min) | −626.57224190 Eh; fresh \|grad\|_max = 9.8e-7 |
-| SCF aids | none, at every step |
+| E(min) | −626.57224190 Eh; fresh ‖grad‖_max = 9.8e-7 |
+| SCF aids | none, every step |
 
-vs literature for **bare gas-phase UO₂²⁺**: CASPT2 (Gagliardi et al. 2001)
-≈1.71 Å; hybrid DFT 1.68–1.70 Å; GGA 1.70–1.72 Å.  PBE0/ECP60MWB **1.679 Å**
-sits on the short (hybrid) side — within ~0.01 Å of published B3LYP/PBE0 and
-~0.03 Å below CASPT2, inside the task's 0.02–0.05 Å target.
+vs literature bare UO₂²⁺: CASPT2 ≈1.71 Å; hybrid DFT 1.68–1.70 Å.  PBE0/ECP60MWB
+1.679 Å — within ~0.01 Å of hybrid-DFT, ~0.03 Å below CASPT2 (inside the
+0.02–0.05 Å target).
 
 ## Phase 2 — SOC geometry
 
-**BLOCKED** — no actinide SO-ECP data (headline 1).  To unblock: add a
-spin-orbit ECP for U to pyscf's basis data (e.g. the Stuttgart ECP60MWB_SO
-parameters as a 3-column entry), or pass one via a custom `ecp={'U': [...]}`
-dict carrying `SO_TYPE` projectors.  The `get_ecp_so` / `get_soc_1e` kernels
-are already validated Na–Bi and require no code change to accept an f-shell
-projector — only the data.
+**Not runnable variationally** (headline 3).  The driver's `phase2` records the
+stability probe rather than an optimisation:
 
-## Phase 3 — frequencies, scalar (FD Hessian at the Phase-1 minimum)
+| quantity | value |
+|---|---|
+| scalar RKS e_tot | −626.57224190 Eh |
+| GKS+SOC e_tot, seeded, plain DIIS | −631.64956051 Eh (converged) |
+| GKS+SOC e_tot, seeded, level_shift 1.0 / 0.5 | −631.64956051 Eh (both, converged) |
+| GKS+SOC from `minao` | diverges (‖g‖ ~ 80, energy −360…−480 Eh) |
+| Δ(GKS+SOC − scalar) | **−5.0773 Eh** (unphysical) |
+| RS-PT2 E₂(SOC), full valence space | **−5.6928 Eh** |
+| RS-PT2 E₂(SOC), frontier window (±0.4 Eh; 7 occ × 14 vir) | **−0.1019 Eh** (physical) |
+| dominant full-space PT2 contributors | U 6p semicore, ε ≈ −8.1 Eh |
 
-`finite_diff_hessian(mf, disp=1e-3)` (central differences, `conv_tol` tightened
-to 1e-12) → `pyscf.hessian.thermo.harmonic_analysis`.  721 s (~19 re-converged
-SCF+gradient evaluations).
+**Consequence for the intended deliverable.**  There is no variationally
+meaningful GKS+SOC minimum, so `optimize(g.as_scanner())` cannot produce
+r_soc(U=O) and Phase 3-SOC has no geometry to take a Hessian at.  The *physical*
+SOC effect on uranyl is (i) exactly **zero at first order** (closed shell:
+`Tr(D·h_SO) = 0` by spin symmetry) and (ii) small at second order
+(≈ −0.1 Eh total; the SO-induced change in r(U=O) / ν₃ from a restricted-space
+treatment is expected at the ~0.01 Å / ~1 % level from the literature, below
+the FD-Hessian noise floor of this workflow).
+
+## Phase 3 — scalar frequencies   [unchanged]
+
+FD Hessian (`finite_diff_hessian`, disp 1e-3, `conv_tol` 1e-12) →
+`pyscf.hessian.thermo.harmonic_analysis`, 721 s.
 
 | mode | symmetry | this work | imag? |
 |---|---|---:|:---:|
-| ν₂ bend (×2) | πu | **180.5 cm⁻¹** | no (\|Im\| < 0.5) |
+| ν₂ bend (×2) | πu | **180.5 cm⁻¹** | no |
 | ν₁ sym str | σg⁺ | **1092.0 cm⁻¹** | no |
 | ν₃ asym str | σu⁺ | **1183.3 cm⁻¹** | no |
 
-The 5 non-vibrational modes come out at 0, 0, 0, 19.6, 20.0 cm⁻¹ (translational/
-rotational residual; the ~20 cm⁻¹ is the FD-Hessian noise floor at `disp=1e-3`).
-No imaginary vibration → the Phase-1 structure is a genuine minimum.
+No imaginary vibration → true minimum.  vs CASPT2 (Gagliardi et al. 2001)
+≈1120 / ≈170 / ≈1260: ν₁ −3 %, ν₃ −6 % (inside the 5–10 % target); loose gates
+(ν₃ ∈ 900–1300, |ν₃−ν₁| = 91 < 100, bend > 0) all met.
 
-### Literature comparison (bare gas-phase UO₂²⁺)
+## Phase 3-SOC — SOC frequencies
 
-| source | method | r(U=O) Å | ν₁ | ν₂ | ν₃ |
-|---|---|---|---|---|---|
-| Gagliardi, Roos, Malmqvist, Dyke, *JPC A* **105** (2001) 10602 | CASPT2 | ~1.71 | ~1120 | ~170 | ~1260 |
-| Shamov & Schreckenbach, *JPC A* **109** (2005) 10961 | DFT survey (BP86/B3LYP, several RECP) | 1.69–1.72 | ~1040–1130 | ~150–250 | ~1100–1200 |
-| Bühl, Kabrede, Diss, Wipff, *JACS* **128** (2006) 6357 | CPMD (BLYP) + waters | 1.72–1.76 | — | — | ~1000–1150 |
-| Vallet, Wahlgren, Grenthe, *JACS* **125** (2003) 14941 | DFT (B3LYP) ± explicit H₂O | 1.70–1.78 | — | — | ~950–1150 |
-| Denning, *JPC A* **111** (2007) 4125 (review) | — | ~1.71 | — | — | bare ~1100–1150; aqueous ~961 |
-| **this work** | RKS/PBE0, ECP60MWB(U)/def2-TZVP(O) | **1.679** | **1092** | **181** | **1183** |
+**Blocked** (no stable variational GKS+SO-ECP state; headline 3 / Phase 2).
 
-Numbers from other groups are quoted approximately (method- and RECP-dependent;
-several from memory of the literature).  The task's loose gates for bare
-uranyl — ν₃ ∈ 900–1300 cm⁻¹, ν₁ within ~100 cm⁻¹ of ν₃ (here \|Δ\| = 91), bend
-> 0 — are all met.
+## Phase 4 — aqueous (C-PCM), scalar   [unchanged]
 
-## Phase 4 — aqueous (C-PCM, ε = 78.36), scalar
+| quantity | gas | aqueous C-PCM | shift |
+|---|---:|---:|---:|
+| r(U=O) | 1.6791 Å | 1.6928 Å | +0.014 |
+| ν₁ | 1092 | 1048 cm⁻¹ | −44 |
+| ν₂ | 181 | 206 cm⁻¹ | +25 |
+| ν₃ | 1183 | 1112 cm⁻¹ | −71 |
 
-Re-optimised from the Phase-1 minimum with C-PCM, then FD Hessian.  995 s.
-
-| quantity | gas (Phase 1/3) | aqueous C-PCM | shift | experiment (aq. [UO₂(H₂O)₅]²⁺) |
-|---|---:|---:|---:|---:|
-| r(U=O) | 1.6791 Å | **1.6928 Å** | +0.014 | ~1.76–1.77 Å (EXAFS) |
-| ν₁ (σg) | 1092 | **1048 cm⁻¹** | −44 | ~869 (Raman) |
-| ν₂ (πu) | 181 | **206 cm⁻¹** | +25 | ~200–210 |
-| ν₃ (σu) | 1183 | **1112 cm⁻¹** | −71 | ~961 (IR) |
-| E | −626.5722 | −627.0504 Eh | −0.478 | (large, as expected for a +2 dication) |
-
-(The FD Hessian with PCM also produces a spurious 57.8 cm⁻¹ rotational pair —
-the continuum cavity is fixed in the lab frame and breaks exact rotational
-invariance; the three genuine vibrations are the ones tabulated.)
-
-**Continuum solvation captures the right *trends* — U=O bond elongates, both
-stretches soften, the bend stiffens — but undershoots the magnitude.**  C-PCM
-alone recovers only ~25–35 % of the measured gas→aqueous ν₃ drop (−71 cm⁻¹ vs
-the ~−220 cm⁻¹ to experiment) and ~25 % of the bond elongation.  The balance
-comes from explicit equatorial-water donation into the U=O σ*/π* system, which a
-bare dielectric cannot model; Bühl/Wipff, Vallet/Wahlgren and Shamov/
-Schreckenbach all show 4–5 explicit H₂O (± continuum) are needed to reach
-ν₃ ≈ 960 cm⁻¹.  This is a known model limitation, **not** a machinery problem —
-the point of Phase 4 was to confirm `GKS + ECP + PCM + FD-Hessian` compose and
-run on an actinide, which they do.
+Correct trends (bond elongates, stretches soften, bend stiffens); continuum
+alone recovers ~25–35 % of the measured gas→aqueous ν₃ drop — the balance needs
+explicit equatorial waters.  Known model limitation, not a machinery problem.
 
 ## Verdict
 
-**Scalar GKS + SO-ECP machinery: VALIDATED on uranium.**
+**Scalar GKS + ECP machinery: VALIDATED on uranium** (geometry to ~0.03 Å of
+CASPT2, ν₃ within 6 %, true minimum, no SCF aids; C-PCM composes).
 
-- The `get_ecp` / `get_ecp_ip` / FD-Hessian / PCM stack runs on a small-core
-  actinide RECP after a one-line kernel-launch fix, and reproduces published
-  bare-uranyl geometry (r(U=O) to ~0.01 Å vs hybrid DFT, ~0.03 Å vs CASPT2) and
-  vibrational frequencies (ν₃ within 6 %, ν₁ within 3 % of CASPT2; no imaginary
-  modes) — both inside the task's accuracy targets.
-- SCF needs **no convergence aids** for closed-shell 5f⁰ uranyl: plain `minao`,
-  no level shift, no SOSCF, at every geometry-optimisation and FD-Hessian point.
-- Continuum solvation composes and gives qualitatively correct shifts.
+**Actinide SO-ECP integrals: VALIDATED.**  `ecpds60mwbso` (Ac–Lr) is present in
+vendored pyscf; gpu4pyscf reproduces `mol.intor('ECPso')` to ~1e-13 for Th–Am
+including the f (l=3) and g (l=4) projectors, `get_soc_1e` to 4e-14, AREP
+unchanged from `stuttgart_rsc`.  No kernel or angular-table change required.
+Accessor + tests added (`gpu4pyscf/gto/actinide_ecp.py`,
+`gto/tests/test_actinide_ecp.py`).
 
-**Spin-orbit half: BLOCKED at data, not code.**  This pyscf checkout ships no
-spin-orbit ECP for any actinide, so the scalar-vs-SO comparison that defines
-Stage 2a cannot be completed here.  The SO-ECP kernels do not fail on an
-actinide basis — they have nothing to act on.  Unblocking is a basis-data task
-(add ECP60MWB_SO for U), after which Phase 2/Phase 3-SOC can run with no
-gpu4pyscf code change.
+**Self-consistent 2-component actinide SOC: BLOCKED by an ECP limitation.**
+Variational GKS + `ecpds60mwbso` on uranyl collapses ~5 Eh (the explicit,
+strongly SO-split 6p semicore over-couples through the unbounded semilocal SO
+projector; these Stuttgart sets are for restricted SO-CI, not variational 2c).
+Confirmed *not* a gpu4pyscf bug (one-shot Fock == pyscf CPU to 1e-12; collapse
+reproduces in RS-PT2).  No large-core actinide SO-ECP exists to avoid it, and
+gpu4pyscf has no restricted-space / frozen-semicore SOC facility.  **The
+scalar-vs-SO geometry/frequency comparison that defines Stage 2a Phase 2/3-SOC
+therefore cannot be produced.**  First-order SOC on closed-shell uranyl is zero
+by symmetry; a restricted-space second-order estimate is ≈ −0.1 Eh.
 
-## SCF convergence aids needed
+**Recommendation for actinide SOC in gpu4pyscf:** use a Dirac-fitted 2-component
+ECP (dhf-type) or all-electron X2C-SOC for *variational* 2c work; the
+Stuttgart SO-ECP integrals validated here are for *perturbative* /
+restricted-active-space use.  (X2C-SOC nuclear gradients remain the open
+SOC-gradient gap — `docs/adf-parity-strategy.md` §4.2.)
 
-**None.**  Every SCF in this study — scalar single point, 5 geometry steps,
-~19 FD-Hessian displacements, the PCM re-optimisation and its Hessian —
-converged to `conv_tol` 1e-9…1e-12 from the default `minao` guess with no level
-shift, no SOSCF, no damping.  Closed-shell 5f⁰ uranyl is numerically benign; the
-open-shell 5fⁿ actinides of the wider campaign are expected to be harder.
+## SCF convergence aids
+
+*Scalar:* none — every scalar SCF (single point, 5 geometry steps, ~19
+FD-Hessian displacements, PCM re-opt + Hessian) converged from `minao` with no
+level shift / SOSCF / damping.
+
+*SOC:* a scalar-RKS density seed is **mandatory** (`minao` diverges); even then
+the converged state is the −631.65 Eh collapse, not a physical minimum.  Level
+shifting (0.2–1.0) does not recover a physical state; SOSCF is `NotImplemented`
+for GKS.

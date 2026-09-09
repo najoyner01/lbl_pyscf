@@ -264,20 +264,33 @@ Separation *selectivity* is rationalized through An–L bond covalency
    solvated `G_tot` finite.  Tests: `hessian/tests/test_fd_hessian.py`.
    → the solvated-SOC ΔG workflow is now implementation-complete for small
    molecules.
-3e. **Stage 2a actinide validation (uranyl UO₂²⁺)** — ⚠️ SCALAR DONE / SOC
-   BLOCKED, 2026-09-09 (`gpu4pyscf/hessian/tests/results/uranyl_soc_2a.md`).
-   Scalar GKS+ECP+PCM+FD-Hessian **validated on uranium**: RKS(PBE0)/ECP60MWB
-   small-core reproduces bare-uranyl r(U=O)=1.679 Å (within ~0.03 Å of CASPT2)
-   and ν₁/ν₂/ν₃ = 1092/181/1183 cm⁻¹ (ν₃ within 6 % of CASPT2, no imaginary
-   modes); SCF needs no convergence aids. Fixed one real GPU bug en route
-   (`gto/ecp.py` — scalar `get_ecp` launched `ECP_cart` on screening-emptied
-   task blocks → CUDA crash for small-core actinide RECPs; one-line guard,
-   commit `0d9a363ad`). **SOC half blocked at data, not code**: this pyscf
-   checkout ships no spin-orbit ECP for any actinide (`has_ecp_soc()` False for
-   U crenbl / stuttgart_rsc / stuttgart_dz / lanl2dz), so the scalar-vs-SO
-   comparison cannot run. `get_ecp_so` raises cleanly on the actinide basis —
-   the SO kernels don't fail, they have nothing to integrate. Unblock = add
-   ECP60MWB_SO for U to pyscf basis data; no gpu4pyscf change needed after that.
+3e. **Stage 2a actinide validation (uranyl UO₂²⁺)** — ⚠️ SCALAR DONE /
+   SOC INTEGRALS DONE / SOC SCF BLOCKED (ECP limitation), 2026-09-09
+   (`gpu4pyscf/hessian/tests/results/uranyl_soc_2a.md`).
+   *Scalar:* RKS(PBE0)/ECP60MWB small-core + FD-Hessian + PCM reproduces
+   bare-uranyl r(U=O)=1.679 Å (~0.03 Å of CASPT2) and ν₁/ν₂/ν₃ = 1092/181/1183
+   cm⁻¹ (ν₃ within 6 %, no imaginary modes); SCF needs no aids. One real GPU
+   bug fixed en route (`gto/ecp.py` screening-emptied `ECP_cart` launch → CUDA
+   crash for small-core actinide RECPs; commit `0d9a363ad`).
+   *SOC integrals:* the actinide SO-ECP **does** ship in vendored pyscf as
+   `ecpds60mwbso` (ECP60MWB-SO, Ac–Lr; Stage 2a's "no data" claim only tried
+   the scalar name). AREP is byte-identical to `stuttgart_rsc`; `has_ecp_soc()`
+   → True, SO projectors l = 1–4. New accessor `gpu4pyscf/gto/actinide_ecp.py`.
+   gpu4pyscf `get_ecp_so`/`get_soc_1e` reproduce `mol.intor('ECPso')` to
+   **~1e-13** for Th–Am incl. the f/g projectors the Na–Bi sweep never
+   stressed (`gto/tests/test_actinide_ecp.py`, 7/7); `so_ang_matrix.cu` +
+   `ECP_LMAX=4` already cover l ≤ 4, no regen.
+   *SOC SCF:* **cannot** be run variationally — self-consistent 2c-GKS +
+   `ecpds60mwbso` on uranyl collapses ~5 Eh below the scalar reference (the
+   explicit, strongly SO-split U 6p semicore over-couples through the
+   unbounded-below semilocal SO projector; these Stuttgart sets are fit for a
+   restricted-active-space SO-CI, not a variational 2c one-electron operator).
+   Not a gpu4pyscf bug: one-shot GKS+SOC Fock/energy matches pyscf CPU to
+   1e-12; the collapse reproduces in RS-PT2 (full-space E2 ≈ −5.7 Eh, frontier
+   ≈ −0.10 Eh). First-order SOC on the closed shell is 0 by symmetry. No
+   large-core actinide SO-ECP exists to move 6p into the core. For variational
+   actinide SOC use a Dirac-fitted 2c ECP or all-electron X2C-SOC (X2C-SOC
+   gradients are the remaining SOC-gradient gap, §4.2).
 4. ETS-NOCV — the highest-value bonding-analysis gap for selectivity
    rationalization.
 5. QTAIM.
