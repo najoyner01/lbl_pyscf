@@ -28,17 +28,17 @@ the driver reuses the method's own gradient scanner
 ``grid_response=True`` gradient (otherwise the omitted grid-weight-derivative
 term leaves a ~5e-5 gradient floor that shows up as noise in the Hessian).
 
-.. warning::
-   **GKS + SOC frequencies need a converged ``spin_samples``.**  Finite
-   differencing amplifies any noise in the energy/gradient by ``1/disp``.  For a
-   genuinely non-collinear density the mcfun spin-angular quadrature is the
-   noise source: at ``spin_samples=50`` (the fast setting the test suite uses)
-   the HI GKS(pbe0)+SOC stretch was seen to move by ~100 cm-1 between runs.  The
-   collinear case is unaffected (mcfun's ``collinear_thrd`` shortcut takes over,
-   and the FD Hessian reproduces the analytic UKS Hessian to 2.6e-6).  Use the
-   default ``spin_samples=770`` or higher and verify frequency convergence
-   before trusting ZPE / S / dG.  ``finite_diff_hessian`` warns when it sees a
-   low value on a SOC GKS input.
+**mcfun ``spin_samples`` for GKS + SOC.**  ``spin_samples`` selects a
+*deterministic* Lebedev order for the multi-collinear XC spin-angular
+integration.  Two convergence studies
+(``hessian/tests/results/spin_samples_convergence.md`` -- closed-shell HI;
+``hessian/tests/results/spin_samples_noncollinear.md`` -- genuinely
+non-collinear I atom ²P, ``int|m| = 1.0``, whole density on the Lebedev sphere)
+find it **irrelevant** in both regimes: ``e_tot`` and the FD frequency are flat
+to < 1e-6 cm^-1 from ``spin_samples = 50`` up to 1202.  The one real control on
+GKS+SOC frequencies is a tightly converged geometry (dw/dr ~= 53 cm^-1 per
+0.01 Angstrom near the HI minimum) plus ``grid_response=True`` (enforced above).
+A true 5f actinide open-shell case has not been tested.
 """
 
 import numpy as np
@@ -48,11 +48,6 @@ from gpu4pyscf.lib import logger
 __all__ = ['finite_diff_hessian', 'harmonic_and_thermo', 'Hessian']
 
 _CONV_TOL_MAX = 1e-11
-
-# Below this, the mcfun spin-angular quadrature is too coarse to finite-difference
-# against for a genuinely non-collinear (SOC) density -- see the warning in
-# finite_diff_hessian and docs/ghf-gradient-design.md Sec 5.6.
-_SPIN_SAMPLES_MIN = 770
 
 
 def _is_gks(mf):
@@ -101,29 +96,12 @@ def finite_diff_hessian(mf, disp=1e-3, verbose=None, grad_scanner=None):
 
     want_soc = bool(getattr(mol, 'has_ecp_soc', lambda: False)())
 
-    # spin_samples picks a *deterministic* Lebedev grid (mcfun_gpu._make_sph_
-    # samples -> MakeAngularGrid), so identical input gives identical output.
-    # But a coarse grid does not integrate the spin-angular dependence exactly,
-    # which leaves the multi-collinear XC energy weakly dependent on the
-    # orientation of the spin quantization axis -- an orientation that is
-    # physically arbitrary (globally degenerate) and that the SCF can land on
-    # differently from run to run.  The resulting PES wobble is amplified by
-    # 1/disp here.  The collinear case is unaffected (mcfun's collinear_thrd
-    # shortcut takes over), so this only bites for a genuinely non-collinear
-    # (SOC) density -- exactly the production case.  Observed: the HI
-    # GKS(pbe0)+SOC stretch differed by ~180 cm-1 between two runs at
-    # spin_samples=50 (the test-suite speed setting), which propagates into ZPE
-    # and S, hence into dG.  See docs/ghf-gradient-design.md Sec 5.6.
-    n_spin = getattr(mf, 'spin_samples', None)
-    if (_is_gks(mf) and want_soc and getattr(mf, 'with_soc', None)
-            and n_spin is not None and n_spin < _SPIN_SAMPLES_MIN):
-        log.warn(
-            'FD Hessian on a non-collinear (SOC) GKS density with '
-            'spin_samples=%s (< %s). Frequencies are NOT converged w.r.t. the '
-            'mcfun spin-angular grid at this setting and can move by ~100 cm-1 '
-            'run to run, which propagates into ZPE/S/dG. Raise spin_samples '
-            '(default %s) and check convergence before trusting thermochemistry.',
-            n_spin, _SPIN_SAMPLES_MIN, _SPIN_SAMPLES_MIN)
+    # NB: mcfun spin_samples (the deterministic Lebedev order for the
+    # multi-collinear XC spin-angular integration) does NOT need to be raised
+    # for GKS+SOC -- spin_samples=50 reproduces 1202 to < 1e-6 cm-1 for both
+    # collinear (HI) and genuinely non-collinear (I atom) densities.  See
+    # hessian/tests/results/spin_samples_{convergence,noncollinear}.md.  The
+    # ~180 cm-1 spread once blamed on it was a geometry-convergence artifact.
 
     scan = grad_scanner if grad_scanner is not None else _make_grad_scanner(mf)
 

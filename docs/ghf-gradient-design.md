@@ -493,7 +493,7 @@ mirroring `hessian/{rhf,uhf,rks,uks}.py`.  `mf.Hessian().kernel()` →
 |---|---|---|
 | V1 | FD GHF Hessian (real block-diagonal, UHF MOs embedded, no SOC) vs analytic UHF Hessian, H₂O/sto-3g | `‖ΔH‖/‖H‖` = **1.7e-6** |
 | V2 | FD GKS(pbe0) Hessian vs analytic UKS(pbe0, `grid_response=True`) Hessian, H₂O/sto-3g | `‖ΔH‖/‖H‖` = **2.6e-6** |
-| V3 | HI/CRENBL, `with_soc=True`, at the optimized geometry, unprojected `harmonic_analysis`: 5 modes `\|freq\| < 50 cm⁻¹` + 1 stretch in 2000–2600 | GHF+SOC: rot 0.6 / 7.2, **stretch 2441 cm⁻¹**; GKS(pbe0)+SOC: rot ≈ 0, **stretch ≈ 2430 cm⁻¹** |
+| V3 | HI/CRENBL, `with_soc=True`, at the optimized geometry, unprojected `harmonic_analysis`: 5 modes `\|freq\| < 50 cm⁻¹` + 1 stretch in 2000–2600 | GHF+SOC: rot 0.6 / 7.2, **stretch 2441 cm⁻¹**; GKS(pbe0)+SOC: rot ≈ 0, **stretch 2252 cm⁻¹** at the converged minimum (an earlier note said ≈2430 — read off-minimum; see §5.6.1) |
 | V4 | HI GHF stretch with vs without `with_soc` (common geometry) | 2408.0 vs 2413.2 → **SOC shift 5.25 cm⁻¹** |
 | V5 | `harmonic_and_thermo` for `GKS(HI,pbe0); with_soc=True` and for `.PCM()` | ZPE 0.00554, H_tot −111.9129, S_tot 7.86e-5, **G_tot −111.9364 Eh**; +PCM **G_tot −111.9396 Eh** (all finite) |
 | V6 | step-size: `‖H(1e-3) − H(2e-3)‖` and `‖H(1e-3) − H(5e-3)‖` (GHF+SOC HI) | **5.8e-6** and 9.8e-6 (Ha/Bohr²) |
@@ -502,40 +502,36 @@ mirroring `hessian/{rhf,uhf,rks,uks}.py`.  `mf.Hessian().kernel()` →
 Tests: `hessian/tests/test_fd_hessian.py` (FD ones `@pytest.mark.slow`).
 Captured A100 run: `hessian/tests/results/fd_hessian_A100.md`.
 
-**Known limitation — GKS+SOC frequencies are not converged at `spin_samples=50`.**
+#### 5.6.1 — `spin_samples` for GKS+SOC: RESOLVED (it was the geometry)
+
 The V3 HI GKS(pbe0)+SOC stretch came out **2253 cm⁻¹** in the captured run vs
-**≈2430 cm⁻¹** on an earlier draw — a ~180 cm⁻¹ spread, wide enough to move ZPE
-by a few tenths of a kcal/mol and to contaminate S, hence ΔG. The collinear path
-is unaffected (V2 matches the analytic UKS Hessian to 2.6e-6, because mcfun's
-`collinear_thrd` shortcut takes over), and the GHF path reproduces 2441 cm⁻¹
-tightly (V4/V6 use GHF). The V3 gate (2000–2600 cm⁻¹) is loose enough that it
-passes either way — it is a smoke test, not a convergence check.
+**≈2430 cm⁻¹** on an earlier draw. Two convergence studies settle it:
 
-*Mechanism — hypothesis, not yet confirmed.* `spin_samples` selects a
-**deterministic** Lebedev grid (`dft/mcfun_gpu.py:_make_sph_samples` →
-`MakeAngularGrid`), so identical input gives identical output; the spread is
-therefore not quadrature randomness. The likely cause is that a coarse Lebedev
-grid does not integrate the spin-angular dependence exactly, leaving the
-multi-collinear XC energy weakly dependent on the **orientation of the spin
-quantization axis** — an orientation that is physically arbitrary (globally
-degenerate) and that the SCF can land on differently from run to run. FD then
-amplifies the resulting PES wobble by `1/disp`. This is directly testable with
-the global-spin-rotation machinery already used by
-`test_ghf_spin_rotation_invariance` (§4.3): at fixed geometry and fixed density,
-rotate the spin axis and watch the GKS+SOC energy — exactly invariant in exact
-theory, so any variation is the quadrature's rotational-invariance error, and it
-should shrink as `spin_samples` grows. Other candidates to rule out: a different
-converged SCF solution, or the two runs having optimized to slightly different
-geometries.
+- **Closed-shell** (`hessian/tests/results/spin_samples_convergence.md`, driver
+  `spin_samples_study.py`). At a *fixed* HI geometry the FD stretch is
+  **2252.43 cm⁻¹ independent of `spin_samples`** (50 → 1202 flat to < 1e-6
+  cm⁻¹), independent of `grids.level` (3 → 5: 0.004 cm⁻¹) and of
+  `grid_response` (on/off: 0). The converged HI density is collinear
+  (`∫|m| = 3e-8`); a global spin rotation changes `E_xc` by 5e-15 Eh at
+  `spin_samples = 50`. **The ~180 cm⁻¹ was geometry:** dω/dr ≈ −53 cm⁻¹ per
+  0.01 Å near the minimum, and the ~2430 value was read at the unoptimized
+  `r = 1.61` Å start point.
+- **Non-collinear** (`hessian/tests/results/spin_samples_noncollinear.md`,
+  driver `spin_samples_noncollinear.py`). I atom ²P GKS(pbe0)+SOC — genuinely
+  non-collinear (`∫|m| = 1.01`, the *entire* density below `collinear_thrd` so
+  every grid point goes through the `spin_samples` Lebedev sphere). `e_tot` is
+  **bit-flat to 8.5e-14 Eh across `spin_samples` 50 → 1202**, `collinear_thrd`
+  on or off. Lebedev order 50 integrates this spin-angular structure exactly.
 
-`spin_samples=50` is a **test-suite speed setting**, not a production one (the
-library default is 770). For any thermochemistry that matters:
+**Recommendation: `spin_samples = 50` is adequate for GKS + SO-ECP energies /
+SOC splittings / frequencies / thermochemistry.** The `hessian/fd.py`
+`_SPIN_SAMPLES_MIN` guard and its warning have been **removed** — no measured
+case supports them. `spin_samples` selects a *deterministic* Lebedev order;
+higher values cost ~linearly (1202 ≈ 8×) for zero gain. The real control on
+GKS+SOC frequencies is a **tightly converged geometry** (`grms ≤ 1e-5` for HI)
+plus `grid_response=True` (enforced by `fd.py`).
 
-- raise `spin_samples` to ≥770 and confirm the frequency is stable against a
-  further increase before trusting ZPE / S / G;
-- `finite_diff_hessian` now emits a `logger.warn` when it is handed a SOC GKS
-  object with `spin_samples < 770`.
-
-Still open: a proper `spin_samples` convergence study for GKS+SOC frequencies,
-and an analytic 2-component / SOC Hessian (would remove the FD noise
-amplification entirely).
+**Still open:** a true 5f actinide open-shell case (An(III) 5f³, Pu(III) 5f⁵ —
+the production target) and a genuinely non-collinear *molecule* (IO ²Π was
+tried; its SCF does not converge). An analytic 2-component / SOC Hessian would
+also remove the FD noise-amplification entirely.
