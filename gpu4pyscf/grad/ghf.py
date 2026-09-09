@@ -196,8 +196,13 @@ def _soc_hcore_grad(mol, dm_ghf):
     return de
 
 
-def _ghf_jk_energy(mf_grad, dm_ghf, verbose=None):
+def _ghf_jk_energy(mf_grad, dm_ghf, k_scale=1.0, verbose=None):
     """Assemble and call _jk_energies_per_atom for GHF density matrix.
+
+    ``k_scale`` multiplies every exact-exchange (K) factor, leaving J untouched
+    -- 1.0 for Hartree-Fock (GHF), the functional hybrid coefficient for GKS,
+    0.0 for a pure (non-hybrid) DFT functional.
+
 
     Implements the 7-pair table from design doc §2.3.  Kernel normalization
     (verified against the CUDA source rys_contract_jk_ip1.cu):
@@ -280,7 +285,7 @@ def _ghf_jk_energy(mf_grad, dm_ghf, verbose=None):
         [B_ab,   B_ba_neg], # cross imag  (bra≠ket; dm2 = B_ab.T = −Im(D_βα))
     ]
     j_factor = [1.,  0.,  0.,  0.,  0.,  0.,  0.]
-    k_factor = [0.,  2., -2.,  2., -2.,  4.,  4.]
+    k_factor = [k_scale * f for f in (0.,  2., -2.,  2., -2.,  4.,  4.)]
 
     # VALIDATION STATUS (see docs/ghf-gradient-design.md §4, §5.1):
     #   - J term + real diagonal K blocks X_aa / X_bb (k_factor=+2):

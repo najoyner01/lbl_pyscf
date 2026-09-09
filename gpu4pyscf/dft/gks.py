@@ -158,8 +158,12 @@ class GKS(rks.KohnShamDFT, GHF):
     get_veff = get_veff
     reset = rks.RKS.reset
     energy_elec = rks.RKS.energy_elec
-    nuc_grad_method = NotImplemented
     to_hf = NotImplemented
+
+    def nuc_grad_method(self):
+        from gpu4pyscf.grad import gks as gks_grad
+        return gks_grad.Gradients(self)
+    Gradients = nuc_grad_method
     
     def to_cpu(self):
         mf = gks.GKS(self.mol, xc=self.xc)
