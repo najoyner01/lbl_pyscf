@@ -302,6 +302,18 @@ class X2C1E_GSCF(_X2C_SCF):
         if mol is None: mol = self.mol
         return self.with_x2c.get_hcore(mol)
 
+    def Gradients(self):
+        '''Analytic nuclear gradient with the X2C-SOC hcore derivative
+        (atomic approximation, ``with_x2c.approx='atom1e'``).  Returns the
+        ordinary GKS (KS base) / GHF (HF base) Gradients; the X2C hcore
+        term is dispatched inside grad/ghf.py:grad_elec on ``with_x2c``.
+        See gpu4pyscf/grad/x2c.py.
+        '''
+        from gpu4pyscf.grad.x2c import Gradients as _X2CGradients
+        return _X2CGradients(self)
+
+    nuc_grad_method = Gradients
+
     def dip_moment(self, mol=None, dm=None, unit='Debye', verbose=logger.NOTE,
                    picture_change=True, **kwargs):
         r''' Dipole moment calculation with picture change correction

@@ -99,8 +99,17 @@ def grad_elec(mf_grad, mo_energy=None, mo_coeff=None, mo_occ=None,
     # Spin-free real DM for the 1e gradient
     dm_sf = (dmaa + dmbb).real              # (nao, nao)
 
-    # --- 1e + overlap Pulay (reuse existing scalar machinery) ---
-    e1_grad = mf_grad._hcore_energy(dm_sf, dme_sf)
+    # --- 1e + overlap Pulay ---
+    if getattr(mf, 'with_x2c', None):
+        # One-electron X2C spin-orbit core Hamiltonian (atomic approximation).
+        # Replaces the plain block-diagonal int1e_ipkin + int1e_ipnuc hcore
+        # derivative; the overlap Pulay term is unchanged (X2C keeps the plain
+        # non-relativistic overlap as the SCF metric).  See grad/x2c.py.
+        from gpu4pyscf.grad.x2c import hcore_grad_energy
+        e1_grad = hcore_grad_energy(mf_grad, dm_ghf, dme_sf)
+    else:
+        # reuse existing scalar machinery
+        e1_grad = mf_grad._hcore_energy(dm_sf, dme_sf)
 
     # --- SOC hcore derivative (d ECPso/dR), step 3 ---
     if getattr(mf, 'with_soc', None) and mol.has_ecp_soc():
