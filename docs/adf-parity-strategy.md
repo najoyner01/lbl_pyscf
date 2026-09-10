@@ -291,6 +291,23 @@ Separation *selectivity* is rationalized through An–L bond covalency
    large-core actinide SO-ECP exists to move 6p into the core. For variational
    actinide SOC use a Dirac-fitted 2c ECP or all-electron X2C-SOC (X2C-SOC
    gradients are the remaining SOC-gradient gap, §4.2).
+3f. **All-electron X2C-SOC on actinides — go/no-go** — ✅ **conditional GO**,
+   2026-09-09 (`gpu4pyscf/hessian/tests/results/uranyl_x2c_soc.md`).
+   `dft.GKS(mol, xc).x2c1e()` on uranyl (UO₂²⁺) and ThO, all-electron
+   ANO-RCC-VDZP (`x2c-SVPall`/`TZVPall` have no actinides in this pyscf):
+   **converges from `minao`, no aids**, to a bounded physical energy — the exact
+   contrast with the SO-ECP collapse (3e). **GPU reproduces CPU pyscf** on an
+   actinide (first such check): `e_tot` |Δ| = 4.4e-6 (uranyl) / 2.0e-6 (ThO),
+   `mo_energy` |Δ| ≤ 5.5e-5, X2C `get_hcore` 5.6e-8 rel. Cheap: `get_hcore`
+   0.46 s (mostly GPU; only `int1e_spnucsp` on CPU pyscf), SCF ~1–2 min at
+   112 AO. **Caveat:** bare one-electron X2C-1e — no 2e-SO / SNSO / AMFI
+   screening — so the SOC *energy* is not quantitative (+29 Eh uranyl / +26 Eh
+   ThO, core-dominated, destabilising; reproduced exactly by pyscf CPU, not a
+   bug). But it is geometry-independent to 99.6 %: the X2C-SOC PES is smooth,
+   `dE_SOC/dr ≈ +0.11 Eh/Å`, SOC contracts r(U=O) by ≈0.02 Å (right sign and
+   magnitude). **Verdict:** pursue the X2C-SOC analytic gradient (decoupling
+   response + GPU pVp/pVxp derivative integrals); run SNSO/AMFI as a parallel
+   workstream for quantitative SOC energies.
 4. ETS-NOCV — the highest-value bonding-analysis gap for selectivity
    rationalization.
 5. QTAIM.

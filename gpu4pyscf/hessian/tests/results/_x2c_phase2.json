@@ -1,0 +1,20 @@
+{
+ "e_gpu_x2c_soc": -28121.32271447418,
+ "t_gpu_scf_s": 118.65318846702576,
+ "d_x2c_hcore_gpu_cpu": 0.0002717042993176655,
+ "d_x2c_hcore_rel": 5.5859993789237136e-08,
+ "t_hcore_gpu_s": 0.18238615989685059,
+ "t_hcore_cpu_s": 2.6703100204467773,
+ "e_sf_rks": -28150.501937942256,
+ "e_sf_gks": -28150.501937942277,
+ "reduction_dE": 2.1827872842550278e-11,
+ "e_soc_contribution_clean": 29.179223468097916,
+ "e_soc_naive": 29.17922346807609,
+ "e_x2c_so_off_inscheme": -28150.50193794294,
+ "e_soc_within_scheme": 29.17922346876003,
+ "e_cpu_x2c_soc": -28121.32271008012,
+ "t_cpu_scf_s": 53.07238054275513,
+ "d_etot_gpu_cpu": 4.394059942569584e-06,
+ "cpu_scf_converged": true,
+ "e_cpu_sf_rks": -28150.501933535288
+}

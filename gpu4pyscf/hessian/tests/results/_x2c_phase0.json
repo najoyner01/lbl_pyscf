@@ -1,0 +1,58 @@
+{
+ "systems": {
+  "uranyl": {
+   "has_ecp": false,
+   "nelec": 106,
+   "nao": 112,
+   "nprim": 438
+  },
+  "ThO": {
+   "has_ecp": false,
+   "nelec": 98,
+   "nao": 98,
+   "nprim": 402
+  }
+ },
+ "basis_coverage": {
+  "ano-rcc-vdzp": [
+   "U",
+   "Th",
+   "O"
+  ],
+  "ano-rcc": [
+   "U",
+   "Th",
+   "O"
+  ],
+  "x2c-svpall": [
+   "O"
+  ],
+  "x2c-tzvpall": [
+   "O"
+  ],
+  "sarc-dkh2": [
+   "U",
+   "Th"
+  ],
+  "cc-pvdz-dk": [
+   "U",
+   "Th",
+   "O"
+  ],
+  "dyall-v2z": [
+   "U",
+   "Th",
+   "O"
+  ],
+  "dzp-dkh": [
+   "O"
+  ],
+  "tzp-dkh": [
+   "O"
+  ]
+ },
+ "basis_used": {
+  "U": "ano-rcc-vdzp",
+  "O": "ano-rcc-vdzp"
+ }
+}
