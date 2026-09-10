@@ -236,7 +236,21 @@ def _xc_grad_full_response(mf, mol, grids0, xc_code, dm2c, xctype, verbose=None)
 
 
 def _gks_xc_grad(ks_grad, mol, dm2c, verbose=None):
-    """XC contribution to the GKS nuclear gradient -> numpy [natm, 3]."""
+    """XC contribution to the GKS nuclear gradient -> numpy [natm, 3].
+
+    KNOWN LIMITATION — strongly non-collinear densities.  This term was
+    validated by (a) exact collinear reduction to grad/uks.py (1e-11) and
+    (b) finite difference on H2O and HI/crenbl+SOC (|D_ab|~3e-2), ~1e-8.  On a
+    *strongly* non-collinear 2c density (uranyl + X2C-SOC, see
+    hessian/tests/results/x2c_soc_grad_A100.md V3) the analytic-vs-FD PES
+    *curvature* is ~4x too weak, the gap growing with displacement — the SOC
+    force slope and the minimum location are still right, but frequencies from
+    the GKS analytic gradient on a heavy-SOC system are not yet trustworthy.
+    The hcore / J / K / X2C terms are exact there (GHF is FD-exact); the error
+    is in this multi-collinear mcfun XC-gradient path, which has no CPU
+    reference.  Use GHF, or an FD Hessian, for heavy-SOC frequencies until this
+    is fixed.
+    """
     mf = ks_grad.base
     ni = mf._numint
     if ni.collinear[0].lower() != 'm':
