@@ -226,6 +226,52 @@ def markdown(meta, rows, functionals, elements, png_name):
     return '\n'.join(out)
 
 
+# Publication style: no gridlines anywhere, heavy type, thick axes. Every
+# number a reader has to read off the figure is bold and >= 9 pt at the
+# default 300 dpi raster size.
+PUB_RC = {
+    'font.family': 'DejaVu Sans',
+    'font.weight': 'bold',
+    'font.size': 13,
+    'axes.labelsize': 15,
+    'axes.labelweight': 'bold',
+    'axes.titlesize': 16,
+    'axes.titleweight': 'bold',
+    'axes.linewidth': 2.0,
+    'axes.grid': False,
+    'axes.spines.top': False,
+    'axes.spines.right': False,
+    'xtick.labelsize': 12,
+    'ytick.labelsize': 12,
+    'xtick.major.width': 2.0,
+    'ytick.major.width': 2.0,
+    'xtick.minor.width': 1.2,
+    'ytick.minor.width': 1.2,
+    'xtick.major.size': 6.5,
+    'ytick.major.size': 6.5,
+    'xtick.minor.size': 3.5,
+    'ytick.minor.size': 3.5,
+    'xtick.direction': 'out',
+    'ytick.direction': 'out',
+    'legend.fontsize': 11,
+    'legend.frameon': False,
+    'lines.linewidth': 2.0,
+    'lines.markersize': 6,
+    'figure.dpi': 100,
+    'savefig.bbox': 'tight',
+    'pdf.fonttype': 42,
+    'ps.fonttype': 42,
+}
+
+
+def _bold_ticks(ax):
+    """Bold every tick label and kill any inherited gridlines."""
+    ax.grid(False, which='both')
+    for lab in list(ax.get_xticklabels(which='both')) + \
+            list(ax.get_yticklabels(which='both')):
+        lab.set_fontweight('bold')
+
+
 def plot(rows, functionals, path, meta):
     try:
         import matplotlib
@@ -237,97 +283,143 @@ def plot(rows, functionals, path, meta):
               '  pip install matplotlib', file=sys.stderr)
         return None
 
-    fig, axes = plt.subplots(2, 2, figsize=(14, 11))
-    threads = meta.get('cpu_threads', '?')
-    fig.suptitle(f'ECP single-point benchmark: {meta.get("basis", "?")}, '
-                 f'{meta.get("gpu", "GPU")} vs CPU @ {threads} threads',
-                 fontsize=13)
-    cmap = plt.get_cmap('tab10')
-    colors = {xc: cmap(i % 10) for i, xc in enumerate(functionals)}
+    written = []
+    with plt.rc_context(PUB_RC):
+        fig, axes = plt.subplots(2, 2, figsize=(17, 14))
+        threads = meta.get('cpu_threads', '?')
+        fig.suptitle(f'ECP single-point benchmark: {meta.get("basis", "?")}, '
+                     f'{meta.get("gpu", "GPU")} vs CPU @ {threads} threads',
+                     fontsize=19, fontweight='bold')
+        # Colour-blind-safe qualitative set (Okabe-Ito), one colour per rung.
+        palette = ['#0072B2', '#D55E00', '#009E73', '#CC79A7',
+                   '#E69F00', '#56B4E9', '#000000', '#7F7F7F']
+        colors = {xc: palette[i % len(palette)]
+                  for i, xc in enumerate(functionals)}
 
-    # (a) wall time vs system size
-    ax = axes[0][0]
-    for xc in functionals:
-        sub = sorted((r for r in rows if r['xc'] == xc and 'gpu_t' in r),
-                     key=lambda r: r['nao'])
-        if sub:
-            ax.plot([r['nao'] for r in sub], [r['gpu_t'] for r in sub], 'o-',
-                    color=colors[xc], ms=4, lw=1, label=f'{xc} GPU')
-        sub = sorted((r for r in rows if r['xc'] == xc and 'cpu_t' in r),
-                     key=lambda r: r['nao'])
-        if sub:
-            ax.plot([r['nao'] for r in sub], [r['cpu_t'] for r in sub], 's--',
-                    color=colors[xc], ms=4, lw=1, alpha=0.55, label=f'{xc} CPU')
-    ax.set_xscale('log'); ax.set_yscale('log')
-    ax.set_xlabel('number of AOs'); ax.set_ylabel('SCF wall time (s)')
-    ax.set_title('(a) wall time vs system size\nsolid = GPU, dashed = CPU')
-    ax.grid(alpha=0.3, which='both')
-    ax.legend(fontsize=6, ncol=2)
+        # (a) wall time vs system size
+        ax = axes[0][0]
+        for xc in functionals:
+            sub = sorted((r for r in rows if r['xc'] == xc and 'gpu_t' in r),
+                         key=lambda r: r['nao'])
+            if sub:
+                ax.plot([r['nao'] for r in sub], [r['gpu_t'] for r in sub],
+                        'o-', color=colors[xc], ms=6, lw=2.2,
+                        label=f'{xc} GPU')
+            sub = sorted((r for r in rows if r['xc'] == xc and 'cpu_t' in r),
+                         key=lambda r: r['nao'])
+            if sub:
+                ax.plot([r['nao'] for r in sub], [r['cpu_t'] for r in sub],
+                        's--', color=colors[xc], ms=5, lw=1.8, alpha=0.65,
+                        label=f'{xc} CPU')
+        ax.set_xscale('log'); ax.set_yscale('log')
+        ax.set_xlabel('Number of AOs')
+        ax.set_ylabel('SCF wall time (s)')
+        ax.set_title('(a)  Wall time vs system size\nsolid = GPU,  dashed = CPU',
+                     loc='left')
+        leg = ax.legend(ncol=2, fontsize=10, handlelength=2.2,
+                        columnspacing=1.0, labelspacing=0.3)
+        for txt in leg.get_texts():
+            txt.set_fontweight('bold')
+        _bold_ticks(ax)
 
-    # (b) speedup vs system size
-    ax = axes[0][1]
-    for xc in functionals:
-        sub = sorted((r for r in rows if r['xc'] == xc and 'speedup' in r),
-                     key=lambda r: r['nao'])
-        if sub:
-            ax.plot([r['nao'] for r in sub], [r['speedup'] for r in sub], 'o-',
-                    color=colors[xc], ms=4, lw=1, label=xc)
-    ax.axhline(1.0, color='k', ls=':', lw=1.5)
-    ax.text(0.02, 0.94, 'above 1: GPU faster', transform=ax.transAxes, fontsize=8)
-    ax.set_xscale('log')
-    ax.set_xlabel('number of AOs'); ax.set_ylabel('speedup (t_CPU / t_GPU)')
-    ax.set_title('(b) speedup vs system size')
-    ax.grid(alpha=0.3, which='both')
-    ax.legend(fontsize=7)
+        # (b) speedup vs system size -- log y, since the ratio spans two decades
+        ax = axes[0][1]
+        for xc in functionals:
+            sub = sorted((r for r in rows if r['xc'] == xc and 'speedup' in r),
+                         key=lambda r: r['nao'])
+            if sub:
+                ax.plot([r['nao'] for r in sub], [r['speedup'] for r in sub],
+                        'o-', color=colors[xc], ms=6, lw=2.2, label=xc)
+        ax.axhline(1.0, color='k', ls='-', lw=2.5, zorder=0)
+        ax.set_xscale('log'); ax.set_yscale('log')
+        ax.set_xlabel('Number of AOs')
+        ax.set_ylabel('Speedup   t(CPU) / t(GPU)')
+        ax.set_title('(b)  Speedup vs system size', loc='left')
+        ax.text(0.03, 0.95, 'GPU faster', transform=ax.transAxes,
+                fontsize=12, fontweight='bold', va='top', color='#333333')
+        ax.text(0.03, 0.05, 'CPU faster', transform=ax.transAxes,
+                fontsize=12, fontweight='bold', va='bottom', color='#333333')
+        leg = ax.legend(ncol=2, fontsize=11, handlelength=2.2,
+                        columnspacing=1.0, labelspacing=0.3, loc='lower right')
+        for txt in leg.get_texts():
+            txt.set_fontweight('bold')
+        _bold_ticks(ax)
 
-    # (c) speedup heat map, systems ordered by size
-    ax = axes[1][0]
-    order = sorted({(r['nao'], r['element']) for r in rows})
-    els = [el for _, el in order]
-    grid = np.full((len(els), len(functionals)), np.nan)
-    for i, el in enumerate(els):
-        for j, xc in enumerate(functionals):
-            hit = [r for r in rows if r['element'] == el and r['xc'] == xc
-                   and 'speedup' in r]
-            if hit:
-                grid[i, j] = hit[0]['speedup']
-    if np.isfinite(grid).any():
-        vmax = np.nanmax(np.abs(np.log2(grid[np.isfinite(grid)])))
-        im = ax.imshow(np.log2(grid), aspect='auto', cmap='RdBu_r',
-                       vmin=-vmax, vmax=vmax)
-        cb = fig.colorbar(im, ax=ax)
-        cb.set_label('log2(speedup):  >0 GPU faster')
-        for i in range(len(els)):
-            for j in range(len(functionals)):
-                if np.isfinite(grid[i, j]):
-                    ax.text(j, i, f'{grid[i, j]:.1f}', ha='center', va='center',
-                            fontsize=5.5)
-    ax.set_xticks(range(len(functionals)))
-    ax.set_xticklabels(functionals, rotation=45, ha='right', fontsize=7)
-    ax.set_yticks(range(len(els)))
-    ax.set_yticklabels([f'{el} ({nao})' for nao, el in order], fontsize=6)
-    ax.set_title('(c) speedup by element (AO count) and functional')
+        # (c) speedup heat map, systems ordered by size
+        ax = axes[1][0]
+        order = sorted({(r['nao'], r['element']) for r in rows})
+        els = [el for _, el in order]
+        grid = np.full((len(els), len(functionals)), np.nan)
+        for i, el in enumerate(els):
+            for j, xc in enumerate(functionals):
+                hit = [r for r in rows if r['element'] == el and r['xc'] == xc
+                       and 'speedup' in r]
+                if hit:
+                    grid[i, j] = hit[0]['speedup']
+        if np.isfinite(grid).any():
+            lg = np.log2(grid)
+            vmax = np.nanmax(np.abs(lg[np.isfinite(lg)]))
+            im = ax.imshow(lg, aspect='auto', cmap='RdBu_r',
+                           vmin=-vmax, vmax=vmax)
+            cb = fig.colorbar(im, ax=ax, pad=0.02)
+            cb.set_label('log₂(speedup)      > 0: GPU faster',
+                         fontsize=13, fontweight='bold')
+            cb.outline.set_linewidth(2.0)
+            cb.ax.tick_params(width=2.0, length=6, labelsize=12)
+            for lab in cb.ax.get_yticklabels():
+                lab.set_fontweight('bold')
+            for i in range(len(els)):
+                for j in range(len(functionals)):
+                    if np.isfinite(grid[i, j]):
+                        # white on the saturated ends, black in the middle
+                        shade = abs(lg[i, j]) / vmax if vmax else 0.0
+                        ax.text(j, i, f'{grid[i, j]:.1f}', ha='center',
+                                va='center', fontsize=8.5, fontweight='bold',
+                                color='white' if shade > 0.55 else 'black')
+        ax.set_xticks(range(len(functionals)))
+        ax.set_xticklabels(functionals, rotation=40, ha='right', fontsize=13)
+        ax.set_yticks(range(len(els)))
+        ax.set_yticklabels([f'{el} ({nao})' for nao, el in order], fontsize=8.5)
+        ax.tick_params(length=0)
+        for side in ('top', 'right'):
+            ax.spines[side].set_visible(True)
+        ax.set_title('(c)  Speedup by element (AO count) and functional',
+                     loc='left')
+        _bold_ticks(ax)
 
-    # (d) GPU/CPU energy agreement
-    ax = axes[1][1]
-    pts = [(r['nao'], max(r['dE'], 1e-16), r['xc'])
-           for r in rows if 'dE' in r]
-    for xc in functionals:
-        sub = [(n, d) for n, d, x in pts if x == xc]
-        if sub:
-            ax.scatter([n for n, _ in sub], [d for _, d in sub], s=18,
-                       color=colors[xc], label=xc, alpha=0.8)
-    ax.axhline(DE_TOL, color='r', ls='--', lw=1.2,
-               label=f'{DE_TOL:.0e} Ha threshold')
-    ax.set_xscale('log'); ax.set_yscale('log')
-    ax.set_xlabel('number of AOs'); ax.set_ylabel('|E_GPU - E_CPU| (Ha)')
-    ax.set_title('(d) GPU/CPU energy agreement')
-    ax.grid(alpha=0.3, which='both')
-    ax.legend(fontsize=7)
+        # (d) GPU/CPU energy agreement
+        ax = axes[1][1]
+        pts = [(r['nao'], max(r['dE'], 1e-16), r['xc'])
+               for r in rows if 'dE' in r]
+        for xc in functionals:
+            sub = [(n, d) for n, d, x in pts if x == xc]
+            if sub:
+                ax.scatter([n for n, _ in sub], [d for _, d in sub], s=55,
+                           color=colors[xc], label=xc, alpha=0.85,
+                           edgecolors='white', linewidths=0.8, zorder=3)
+        ax.axhline(DE_TOL, color='k', ls='--', lw=2.2, zorder=2,
+                   label=f'{DE_TOL:.0e} Ha threshold')
+        ax.set_xscale('log'); ax.set_yscale('log')
+        ax.set_xlabel('Number of AOs')
+        ax.set_ylabel('|E(GPU) − E(CPU)|   (Ha)')
+        ax.set_title('(d)  GPU/CPU energy agreement', loc='left')
+        leg = ax.legend(ncol=2, fontsize=11, handlelength=1.8,
+                        columnspacing=1.0, labelspacing=0.3)
+        for txt in leg.get_texts():
+            txt.set_fontweight('bold')
+        _bold_ticks(ax)
 
-    fig.tight_layout(rect=(0, 0, 1, 0.97))
-    fig.savefig(path, dpi=150)
-    print(f'wrote {path}')
+        fig.tight_layout(rect=(0, 0, 1, 0.965))
+        fig.savefig(path, dpi=300)
+        written.append(path)
+        # vector companion for typesetting
+        pdf_path = os.path.splitext(path)[0] + '.pdf'
+        fig.savefig(pdf_path)
+        written.append(pdf_path)
+        plt.close(fig)
+
+    for p in written:
+        print(f'wrote {p}')
     return path
 
 
