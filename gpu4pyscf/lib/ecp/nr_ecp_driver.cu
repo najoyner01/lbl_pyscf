@@ -39,6 +39,11 @@ int ECP_cart(double *gctr,
             const int *atm, const int *bas, const double *env,
             const int li, const int lj, const int lc){
     // one task per thread block
+    // Screening can empty a task group; a 0-block launch is not a legal
+    // configuration, so treat it as a no-op.
+    if (ntasks == 0){
+        return 0;
+    }
     dim3 threads(THREADS);
     dim3 blocks(ntasks);
     if (lc >= 0){
@@ -130,6 +135,11 @@ int ECP_ip_cart(double *gctr,
             const int *atm, const int *bas, const double *env,
             const int li, const int lj, const int lc){
     // one task per thread block
+    // Screening can empty a task group; a 0-block launch is not a legal
+    // configuration, so treat it as a no-op.
+    if (ntasks == 0){
+        return 0;
+    }
     dim3 threads(THREADS);
     dim3 blocks(ntasks);
     if (lc < 0){
@@ -229,6 +239,11 @@ int ECP_ipipv_cart(double *gctr,
             const int *atm, const int *bas, const double *env,
             const int li, const int lj, const int lc){
     // one task per thread block
+    // Screening can empty a task group; a 0-block launch is not a legal
+    // configuration, so treat it as a no-op.
+    if (ntasks == 0){
+        return 0;
+    }
     dim3 threads(THREADS);
     dim3 blocks(ntasks);
     
@@ -303,6 +318,11 @@ int ECP_ipvip_cart(double *gctr,
             const int *atm, const int *bas, const double *env,
             const int li, const int lj, const int lc){
     // one task per thread block
+    // Screening can empty a task group; a 0-block launch is not a legal
+    // configuration, so treat it as a no-op.
+    if (ntasks == 0){
+        return 0;
+    }
     dim3 threads(THREADS);
     dim3 blocks(ntasks);
 
@@ -377,6 +397,11 @@ int ECP_so_cart(double *gctr,
     // Spin-orbit ECP: gctr has layout [3, nao, nao] (component, bra, ket).
     // The host passes only SO_TYPE_OF==1 projectors, with the `ul` term already
     // rewritten to max_l(atom)+1, so lc >= 0 always here.
+    // Screening can empty a task group; a 0-block launch is not a legal
+    // configuration, so treat it as a no-op.
+    if (ntasks == 0){
+        return 0;
+    }
     dim3 threads(THREADS);
     dim3 blocks(ntasks);
 

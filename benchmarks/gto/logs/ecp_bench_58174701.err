@@ -1,0 +1,4 @@
+/global/u1/n/najoyner/lbl_pyscf/gpu4pyscf/lib/cutensor.py:154: UserWarning: using cupy as the tensor contraction engine.
+  warnings.warn(f'using {contract_engine} as the tensor contraction engine.')
+[2026-09-10T22:42:14.151] error: *** STEP 58174701.0 ON nid002201 CANCELLED AT 2026-09-10T22:42:14 DUE TO TIME LIMIT ***
+[2026-09-10T22:42:14.152] error: *** JOB 58174701 ON nid002201 CANCELLED AT 2026-09-10T22:42:14 DUE TO TIME LIMIT ***

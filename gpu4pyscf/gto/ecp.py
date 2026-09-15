@@ -315,6 +315,8 @@ def get_ecp(mol):
     for i in range(n_groups):
         for j in range(i,n_groups):
             for k in range(n_ecp_groups):
+                if len(tasks_all[i,j,k]) == 0:
+                    continue
                 tasks = cp.asarray(tasks_all[i,j,k], dtype=np.int32, order='F')
                 ntasks = len(tasks)
                 li = uniq_l_ctr[i,0]
