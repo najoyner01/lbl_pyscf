@@ -17,6 +17,158 @@ actinide, `NpO₂²⁺`/`[UCl₆]²⁻`) is next. Coupled cluster (below) and Ti
 2/3 ADF-parity items (ETS-NOCV, QTAIM, EPR/ESR, …) are untouched, independent
 tracks — pick up whenever.
 
+## Next task (ready to run on Perlmutter) — fix `_gks_xc_grad`
+
+The prompt below is drafted and ready to hand to a Perlmutter session
+verbatim. It is the top open item (see above).
+
+```
+You are working on gpu4pyscf at /pscratch/sd/n/namehta4/Quantum/lbl_pyscf, branch
+`gpu-porting`. PySCF→GPU port. `pyscf/` is READ-ONLY reference — never edit it.
+$SCRATCH = /pscratch/sd/n/namehta4.
+
+# GOAL
+
+Fix a curvature error in `gpu4pyscf/grad/gks.py:_gks_xc_grad` (the
+multi-collinear XC nuclear-gradient term) that shows up on STRONGLY
+non-collinear 2c densities. Read `docs/ghf-gradient-design.md` §5.3 and
+`hessian/tests/results/x2c_soc_grad_A100.md` §V3 first — that's where it was
+found and isolated.
+
+This is CORRECTNESS work on an already-merged, partially-validated function.
+Do not guess-and-check: localize the bug with the diagnostics below BEFORE
+changing code, then fix, then re-validate broadly (the fix must not break the
+cases that already pass).
+
+# THE FINDING (from x2c_soc_grad_A100.md V3)
+
+On uranyl (UO2 2+) with GKS/pbe0 + X2C-SOC (`approx='atom1e'`), at r(U=O) =
+1.66 / 1.68 / 1.70 Å:
+  - the analytic X2C-SOC hcore derivative is FD-exact (V2u, ~1e-7 vs FD of the
+    forward get_hcore — no SCF, no XC grid involved);
+  - GHF uranyl (no XC term at all) is FD-exact (V2, 4.4e-5 at a displaced,
+    large-gradient geometry);
+  - the SO-off reduction matches pyscf's `sfx2c1e_grad` to 1.3e-10;
+  - **but** the GKS analytic gradient's implied PES curvature is ~4x too weak
+    vs central-FD of `e_tot` (analytic k ≈ 1.4 vs FD k ≈ 5.5 Eh/Å²), and the
+    gap GROWS with displacement over that 0.04 Å span;
+  - **the gap is UNCHANGED between `grid_response=True` and `False`.**
+
+That last point is the key isolating clue: `grid_response=False` runs ONLY
+`_xc_grad_orbital`; `grid_response=True` runs `_xc_grad_full_response`, which
+recomputes an equivalent orbital-response term (`de_rho`) plus an ADDITIONAL
+grid-weight-derivative term (`de_weight`). If toggling grid_response doesn't
+change the error, the bug is most likely in code common to both paths — the
+shared "channel" contraction pattern:
+
+    for c in range(4):                          # c = rho, mx, my, mz
+        wv[c]  (from mcfun's vxc, weight-scaled)
+        vtmp = <AO-derivative> . wv[c]           # rks_grad._d1_dot_ / _gga_grad_sum_
+        contribution += Tr[ vtmp . dm_ch[c] ]
+
+which appears (nearly identically) inside both `_xc_grad_orbital` and the
+`de_rho` accumulation of `_xc_grad_full_response`. Start there, not in
+`de_weight`.
+
+# WHY IT ONLY SHOWS UP NOW
+
+The existing GKS+SOC gradient tests (`test_gks_grad.py`, and
+`test_ghf_grad.py::TestGHFGradSOC` on HI/crenbl) validated `_gks_xc_grad` by:
+  (a) exact collinear reduction to `grad/uks.py` (D_ab = 0, m_x=m_y=0 — never
+      exercises those two channels at all);
+  (b) FD on H2O (collinear, same blind spot) and HI/crenbl+SOC, where
+      `|D_ab| ~ 3e-2` — a SMALL non-collinear admixture on a light system —
+      at a tiny FD step (h=1e-4 bohr, one point).
+Uranyl + X2C-SOC has a much larger, genuinely non-collinear m_x/m_y (heavy-atom
+SOC), and V3 spans a WIDE geometry range. A working hypothesis: there is a
+wrong/missing factor specific to the **m_x or m_y channel** (c=1,2) that is
+small in absolute terms for weak non-collinearity (swamped by the tolerance in
+the earlier tests) but large and geometry-dependent for uranyl — consistent
+with "error grows with displacement" if the m_x/m_y magnitude itself changes
+over that geometry range.
+
+**One concrete thing to re-derive, not assume:** the GGA branch does
+`wv[:, 0] *= .5` UNIFORMLY across all 4 channels
+(`_xc_grad_orbital`/`_xc_grad_full_response`), copied from the ENERGY-side
+`numint2c.py:_mcol_gga_vxc_mat`'s `if hermi: wv[:,0] *= .5  # because of
+v+v.conj().T in r_vxc`. On the energy side that halving is compensated by an
+explicit "+ Hermitian conjugate" step elsewhere in the Fock-matrix build. On
+the gradient side, the contraction `Tr[vtmp . dm_ch[c]]` is NOT a Fock-matrix
+build — there may be no equivalent completion, or it may need a different one
+for the off-diagonal (m_x, m_y) channels specifically (which came from
+`D_ab`/`D_ba`, an off-diagonal *block* pair, vs the diagonal `D_aa`/`D_bb`
+pair that the standard RKS/UKS gradient already handles correctly via
+`grad/uks.py`). Verify by direct re-derivation against `grad/uks.py`'s
+GGA gradient term and the `_mcol_gga_vxc_mat` Fock build — do not assume the
+convention transfers unchanged.
+
+# DIAGNOSTIC PROTOCOL — localize before fixing
+
+1. **Reproduce the discrepancy** as a regression baseline: uranyl X2C-SOC,
+   r = 1.66/1.68/1.70 Å, reproduce the ~4x curvature mismatch from
+   `x2c_soc_grad_A100.md` V3 exactly (same settings) before touching code.
+2. **Channel isolation.** In `_gks_xc_grad`'s energy AND gradient evaluation,
+   zero out one channel of `dm_ch` at a time (rho, mx, my, mz) and separately
+   at a time, artificially zero the corresponding `vxc`/`wv` channel — compare
+   analytic-vs-FD-of-`e_tot` for the truncated problem. This should show
+   whether the error is confined to a single channel (m_x or m_y expected) or
+   spread across the assembly. Careful: zeroing a channel changes the physics,
+   so compare analytic-vs-FD for the *truncated* Hamiltonian at each geometry,
+   not against the full result.
+3. **Non-collinearity magnitude scan.** Use the global-spin-rotation trick
+   from `test_ghf_grad.py::test_ghf_spin_rotation_invariance` — but recall
+   SOC breaks that invariance, so instead: take a FIXED converged uranyl X2C-
+   SOC density at ONE geometry, rotate the spin quantization axis by angle θ
+   (this moves weight between the diagonal and m_x/m_y channels while leaving
+   the physical state equivalent), and compare the analytic gradient before
+   vs after rotation. If `_gks_xc_grad` is correct, the *total* gradient must
+   be invariant under a pure spin rotation at fixed geometry (rotating the spin
+   frame doesn't change any nuclear force) — a MUCH cheaper and sharper
+   diagnostic than a geometry scan, no SCF re-convergence needed, and it
+   isolates exactly the m_x/m_y-dependence you're hunting.
+4. Once localized, re-derive that piece term-by-term against
+   `numint2c.py:_mcol_lda_vxc_mat`/`_mcol_gga_vxc_mat` (the validated energy
+   side) and `grad/uks.py` (the validated collinear gradient), the same way
+   `grad/ghf.py`'s design doc derived the JK term — write the derivation down
+   before editing code.
+
+# FIX + VALIDATION
+
+- Fix `_gks_xc_grad` (LDA and GGA branches; check MGGA is still correctly
+  NotImplemented, don't accidentally half-fix it).
+- Re-run V3's exact setup (uranyl, r=1.66/1.68/1.70) — curvature must now
+  agree with FD of `e_tot` to a tight tolerance (define one, e.g. <5% or
+  <1e-5 Eh/Å² depending on what FD-noise allows).
+- Add a NEW test exercising strong non-collinearity directly and cheaply: the
+  spin-rotation-invariance-at-fixed-geometry check from step 3 above, made
+  permanent in `grad/tests/test_gks_grad.py` (target ~1e-8, no SCF needed).
+- Regression: `grad/tests/test_gks_grad.py`, `test_ghf_grad.py` (incl.
+  `TestGHFGradSOC`), `test_soc_geomopt.py`, `solvent/tests/test_pcm_soc.py`,
+  `hessian/tests/test_fd_hessian.py` must all still pass — the fix must not
+  perturb the already-correct collinear/weak-non-collinear cases.
+- Re-run `x2c_soc_grad_A100.md`'s V3/V5 uranyl checks post-fix and update that
+  doc with the corrected curvature numbers.
+
+# CONSTRAINTS
+
+- Never edit pyscf/. Fix stays in `grad/gks.py`; if the bug is in a shared
+  helper (`rks_grad._gga_grad_sum_` etc.), fix at the call site in `gks.py`
+  unless the helper itself is provably wrong for the multi-collinear case —
+  flag that explicitly rather than changing a shared RKS/UKS helper blindly.
+- Do not touch the X2C hcore-derivative term (`grad/x2c.py`) — it's validated
+  and out of scope here.
+- Commit trailer:
+      Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
+  (add your own Claude-Session line).
+- Cannot push from Perlmutter. When done:
+      git bundle create $SCRATCH/gks-xc-grad-fix.bundle origin/gpu-porting..HEAD
+      git bundle verify $SCRATCH/gks-xc-grad-fix.bundle
+  then tell me: which channel/term was wrong and why (the actual mechanism,
+  not just "fixed it"), the corrected uranyl curvature vs FD, the
+  spin-rotation-invariance number for the new test, and the regression
+  results across the suites listed above.
+```
+
 ## Purpose (original framing — still the two intended tracks, CC is dormant)
 
 Port as much of PySCF's functionality to GPU as practical, inside the
