@@ -1,12 +1,35 @@
 # CLAUDE.md — PySCF → GPU porting project
 
-## Purpose
+## Current focus (as of 2026-09-17) — read this first
+
+The real driving goal is **replacing ADF** for actinide-series research
+(molecular; periodic is a separate, descoped track) — see
+`docs/adf-parity-strategy.md`. Status: Tier 1 (SOC energies/gradients,
+charges, geometry opt, solvation, thermochemistry) is DONE. Currently mid an
+**actinide-readiness gate**: an all-electron X2C-SOC nuclear gradient just
+landed (`grad/x2c.py`, atomic approximation) and unblocks variational
+actinide SOC geometry optimization at GHF level. **Top open item:** that same
+validation found a curvature bug in `grad/gks.py:_gks_xc_grad` for strongly
+non-collinear densities (GKS/DFT SOC frequencies on heavy-SOC systems aren't
+trustworthy yet) — see `docs/adf-parity-strategy.md` §4.5 item 3g for the
+diagnostic protocol already written up. Fix that, then Stage 2b (open-shell
+actinide, `NpO₂²⁺`/`[UCl₆]²⁻`) is next. Coupled cluster (below) and Tier
+2/3 ADF-parity items (ETS-NOCV, QTAIM, EPR/ESR, …) are untouched, independent
+tracks — pick up whenever.
+
+## Purpose (original framing — still the two intended tracks, CC is dormant)
 
 Port as much of PySCF's functionality to GPU as practical, inside the
 **`gpu4pyscf`** plugin. Immediate targets, in order:
 
-1. **ECP** (effective core potentials) — finish the remaining gaps.
-2. **Coupled cluster** (CCSD → CCSD(T) → Λ/RDM/gradients → UCCSD → EOM-CC).
+1. **ECP** (effective core potentials) — feature-complete for molecular work
+   (energy + gradient, incl. actinide integrals); periodic gradient/stress and
+   perf items remain, not on the critical path. See `docs/adf-parity-strategy.md`
+   for the actinide-SOC caveat (variational 2c-ECP-SOC is dead-ended there;
+   X2C-SOC is the active replacement).
+2. **Coupled cluster** (CCSD → CCSD(T) → Λ/RDM/gradients → UCCSD → EOM-CC) —
+   dormant since the initial incore RHF CCSD; not touched during the ADF-parity
+   work.
 
 See `docs/STRATEGY.md` for the phased roadmap and rationale.
 
