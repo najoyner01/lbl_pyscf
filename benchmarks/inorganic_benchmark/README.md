@@ -84,6 +84,22 @@ sets write to different files and never collide.
 `make_report.py` needs `matplotlib` for the figures (`pip install matplotlib`);
 without it the tables and CSV are still written.
 
+### Figures
+
+Each `<prefix>.png`/`.pdf` has three panels:
+
+- **(a)** SCF wall time vs number of AOs for **B3LYP only** (solid = GPU,
+  dashed = CPU) — the workhorse hybrid, not every functional at once.
+- **(b)** Speedup (`t_CPU / t_GPU`) vs number of AOs, one line per functional.
+- **(c)** Speedup heat map, element (ordered by AO count) x functional.
+
+The markdown tables and CSV always cover every row in the results file, but
+the figures are filtered to one charge state so a single panel is never a mix
+of anions and neutrals: `report.png` (from `results.jsonl`, the `singlet` set)
+shows only its 6 anions (TcO4⁻, ReO4⁻, [RhCl6]³⁻, [IrCl6]³⁻, [PdCl4]²⁻,
+[PtCl4]²⁻); `report_neutral.png` and `report_lanl.png` show neutral rows only.
+Override with `--plot-subset {anion,neutral,all}` if you want something else.
+
 ## Settings
 
 Defaults for the two def2 sets. The f-element set overrides several of these —

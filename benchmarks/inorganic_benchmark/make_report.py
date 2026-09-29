@@ -56,6 +56,13 @@ def parse_args(argv=None):
     p.add_argument('--prefix', default='report',
                    help='basename for the .md / .csv / .png outputs')
     p.add_argument('--no-plot', action='store_true')
+    p.add_argument('--plot-subset', choices=('auto', 'anion', 'neutral', 'all'),
+                   default='auto',
+                   help="which charge states the figures show. 'auto' (default) "
+                        "picks anion-only for the singlet set (its 6 charged "
+                        "species are the thing unique to it) and neutral-only "
+                        "for the neutral/lanl sets; the markdown tables and CSV "
+                        "always cover every row regardless of this choice.")
     return p.parse_args(argv)
 
 
@@ -496,6 +503,36 @@ PUB_RC = {
 }
 
 
+def select_plot_subset(rows, meta, choice):
+    """Pick which charge states the figures show.
+
+    'auto' keeps the two def2 sets internally homogeneous: the singlet set
+    (`--systems singlet`, the default) mixes 30 neutrals with 6 anions used
+    precisely to dodge open-shell neutrals, so its figures show the anions --
+    the thing unique to that set. The neutral set is charge-0 throughout
+    except for those same six species (now open-shell neutrals), so its
+    figures show the neutral rows. Falls back to every row if the requested
+    subset is empty (e.g. an all-neutral lanl run), so a mismatched --systems
+    guess never produces a blank figure.
+    """
+    systems = meta.get('systems') or 'singlet'
+    if choice == 'all':
+        return rows, None
+    if choice == 'auto':
+        want = 'anion' if systems == 'singlet' else 'neutral'
+    else:
+        want = choice
+    if want == 'anion':
+        sub = [r for r in rows if r.get('charge', 0) < 0]
+        label = 'anions only'
+    else:
+        sub = [r for r in rows if r.get('charge', 0) == 0]
+        label = 'neutrals only'
+    if not sub:
+        return rows, None
+    return sub, label
+
+
 def _bold_ticks(ax):
     """Bold every tick label and kill any inherited gridlines."""
     ax.grid(False, which='both')
@@ -504,7 +541,7 @@ def _bold_ticks(ax):
         lab.set_fontweight('bold')
 
 
-def plot(rows, functionals, path, meta):
+def plot(rows, functionals, path, meta, subset_label=None):
     try:
         import matplotlib
         matplotlib.use('Agg')
@@ -517,45 +554,47 @@ def plot(rows, functionals, path, meta):
 
     written = []
     with plt.rc_context(PUB_RC):
-        fig, axes = plt.subplots(2, 2, figsize=(17, 14))
-        threads = meta.get('cpu_threads', '?')
-        fig.suptitle(f'ECP single-point benchmark: {meta.get("basis", "?")}, '
-                     f'{meta.get("gpu", "GPU")} vs CPU @ {threads} threads',
-                     fontsize=19, fontweight='bold')
+        fig = plt.figure(figsize=(17, 14))
+        gs = fig.add_gridspec(2, 2, height_ratios=[1, 1.15], hspace=0.32)
+        title = (f'ECP single-point benchmark: {meta.get("basis", "?")}, '
+                 f'{meta.get("gpu", "GPU")} vs CPU @ {meta.get("cpu_threads", "?")} threads')
+        if subset_label:
+            title += f'  --  {subset_label}'
+        fig.suptitle(title, fontsize=19, fontweight='bold')
         # Colour-blind-safe qualitative set (Okabe-Ito), one colour per rung.
         palette = ['#0072B2', '#D55E00', '#009E73', '#CC79A7',
                    '#E69F00', '#56B4E9', '#000000', '#7F7F7F']
         colors = {xc: palette[i % len(palette)]
                   for i, xc in enumerate(functionals)}
 
-        # (a) wall time vs system size
-        ax = axes[0][0]
-        for xc in functionals:
-            sub = sorted((r for r in rows if r['xc'] == xc and 'gpu_t' in r),
+        # (a) wall time vs system size -- B3LYP only, the workhorse hybrid
+        ax = fig.add_subplot(gs[0, 0])
+        b3lyp = next((xc for xc in functionals if xc.lower() == 'b3lyp'), None)
+        if b3lyp is not None:
+            sub = sorted((r for r in rows if r['xc'] == b3lyp and 'gpu_t' in r),
                          key=lambda r: r['nao'])
             if sub:
                 ax.plot([r['nao'] for r in sub], [r['gpu_t'] for r in sub],
-                        'o-', color=colors[xc], ms=6, lw=2.2,
-                        label=f'{xc} GPU')
-            sub = sorted((r for r in rows if r['xc'] == xc and 'cpu_t' in r),
+                        'o-', color=colors[b3lyp], ms=7, lw=2.4, label='GPU')
+            sub = sorted((r for r in rows if r['xc'] == b3lyp and 'cpu_t' in r),
                          key=lambda r: r['nao'])
             if sub:
                 ax.plot([r['nao'] for r in sub], [r['cpu_t'] for r in sub],
-                        's--', color=colors[xc], ms=5, lw=1.8, alpha=0.65,
-                        label=f'{xc} CPU')
+                        's--', color=colors[b3lyp], ms=6, lw=2.0, alpha=0.7,
+                        label='CPU')
         ax.set_xscale('log'); ax.set_yscale('log')
         ax.set_xlabel('Number of AOs')
         ax.set_ylabel('SCF wall time (s)')
-        ax.set_title('(a)  Wall time vs system size\nsolid = GPU,  dashed = CPU',
+        ax.set_title('(a)  B3LYP wall time vs system size\nsolid = GPU,  dashed = CPU',
                      loc='left')
-        leg = ax.legend(ncol=2, fontsize=10, handlelength=2.2,
-                        columnspacing=1.0, labelspacing=0.3)
+        leg = ax.legend(fontsize=11, handlelength=2.2, labelspacing=0.3)
         for txt in leg.get_texts():
             txt.set_fontweight('bold')
         _bold_ticks(ax)
 
-        # (b) speedup vs system size -- log y, since the ratio spans two decades
-        ax = axes[0][1]
+        # (b) speedup vs system size, all functionals -- log y, since the
+        # ratio spans two decades
+        ax = fig.add_subplot(gs[0, 1])
         for xc in functionals:
             sub = sorted((r for r in rows if r['xc'] == xc and 'speedup' in r),
                          key=lambda r: r['nao'])
@@ -577,8 +616,9 @@ def plot(rows, functionals, path, meta):
             txt.set_fontweight('bold')
         _bold_ticks(ax)
 
-        # (c) speedup heat map, systems ordered by size
-        ax = axes[1][0]
+        # (c) speedup heat map, systems ordered by size -- spans the full
+        # bottom row now that panel (d) is gone
+        ax = fig.add_subplot(gs[1, :])
         order = sorted({(r['nao'], r['element']) for r in rows})
         els = [el for _, el in order]
         grid = np.full((len(els), len(functionals)), np.nan)
@@ -619,40 +659,6 @@ def plot(rows, functionals, path, meta):
                      loc='left')
         _bold_ticks(ax)
 
-        # (d) GPU/CPU energy agreement
-        ax = axes[1][1]
-        pts = [(r['nao'], max(r['dE'], 1e-16), r['xc'], r.get('spin', 0) != 0)
-               for r in rows if 'dE' in r]
-        any_open = any(op for *_, op in pts)
-        # Open-shell (UKS) points get a triangle: their dE can be dominated by
-        # the two devices landing on different symmetry-broken solutions, so
-        # they must not be read as the restricted accuracy floor.
-        for xc in functionals:
-            for open_shell, marker, size in ((False, 'o', 55), (True, '^', 90)):
-                sub = [(n, d) for n, d, x, op in pts
-                       if x == xc and op == open_shell]
-                if not sub:
-                    continue
-                ax.scatter([n for n, _ in sub], [d for _, d in sub], s=size,
-                           marker=marker, color=colors[xc],
-                           label=xc if not open_shell else None, alpha=0.85,
-                           edgecolors='white', linewidths=0.8, zorder=3)
-        ax.axhline(DE_TOL, color='k', ls='--', lw=2.2, zorder=2,
-                   label=f'{DE_TOL:.0e} Ha threshold')
-        if any_open:
-            ax.scatter([], [], marker='^', s=90, color='0.35',
-                       edgecolors='white', linewidths=0.8,
-                       label='open shell (UKS)')
-        ax.set_xscale('log'); ax.set_yscale('log')
-        ax.set_xlabel('Number of AOs')
-        ax.set_ylabel('|E(GPU) − E(CPU)|   (Ha)')
-        ax.set_title('(d)  GPU/CPU energy agreement', loc='left')
-        leg = ax.legend(ncol=2, fontsize=11, handlelength=1.8,
-                        columnspacing=1.0, labelspacing=0.3)
-        for txt in leg.get_texts():
-            txt.set_fontweight('bold')
-        _bold_ticks(ax)
-
         fig.tight_layout(rect=(0, 0, 1, 0.965))
         fig.savefig(path, dpi=300)
         written.append(path)
@@ -690,7 +696,9 @@ def main(argv=None):
     write_csv(csv_path, rows)
     print(f'wrote {csv_path}')
 
-    png = None if args.no_plot else plot(rows, functionals, png_path, meta)
+    plot_rows, subset_label = select_plot_subset(rows, meta, args.plot_subset)
+    png = None if args.no_plot else plot(plot_rows, functionals, png_path, meta,
+                                         subset_label=subset_label)
     with open(md_path, 'w') as fh:
         fh.write(markdown(meta, rows, functionals, elements,
                           os.path.basename(png) if png else None))
