@@ -44,3 +44,4 @@ srun -n 1 --gpus-per-task=1 python benchmarks/inorganic_benchmark/run_bench.py \
     --resume
 
 python benchmarks/inorganic_benchmark/make_report.py
+python benchmarks/inorganic_benchmark/make_figures.py --sets closed_shell

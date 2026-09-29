@@ -20,6 +20,8 @@ coverage these are molecular AO calculations via `gpu4pyscf.dft.rks` / `uks`.
 | `lanl_benchmark.json` | source data for the above — experimental geometries plus charge, spin, oxidation state, ligand class and per-row convergence notes, exported from `systems_benchmarking.xlsx`. |
 | `run_bench.py` | the driver, for any of the three sets. Writes one JSON record per (system, functional, device) to `results.jsonl`, `results_neutral.jsonl` or `results_lanl.jsonl`. |
 | `make_report.py` | reads a JSONL, writes `<prefix>.md`, `<prefix>.csv`, `<prefix>.png`/`.pdf`. |
+| `make_figures.py` | the publication figures: for each of the two def2 sets, panels (a) wall time, (b) speedup, (c) speedup heat map, every metal included. Writes `figures/{closed_shell,open_shell}[_a|_b|_c].{png,pdf}`. |
+| `figures/` | output of `make_figures.py`, 300 dpi PNG plus vector PDF. |
 | `run_bench.sbatch` | Perlmutter batch job: full closed-shell sweep, then the report. |
 | `run_bench_neutral.sbatch` | same, for the neutral/open-shell set. |
 | `run_bench_lanl.sbatch` | same, for the f-element set. |
@@ -86,19 +88,63 @@ without it the tables and CSV are still written.
 
 ### Figures
 
-Each `<prefix>.png`/`.pdf` has three panels:
+Two generators write figures from the same JSONL files.
 
-- **(a)** SCF wall time vs number of AOs for **B3LYP only** (solid = GPU,
-  dashed = CPU) — the workhorse hybrid, not every functional at once.
-- **(b)** Speedup (`t_CPU / t_GPU`) vs number of AOs, one line per functional.
-- **(c)** Speedup heat map, element (ordered by AO count) x functional.
+**`make_figures.py` — the publication set (`figures/`).** One set per
+molecule set, every metal in it, three panels each, as standalone files
+(`<set>_a`, `<set>_b`, `<set>_c`) and as one combined sheet (`<set>`):
 
-The markdown tables and CSV always cover every row in the results file, but
-the figures are filtered to one charge state so a single panel is never a mix
-of anions and neutrals: `report.png` (from `results.jsonl`, the `singlet` set)
-shows only its 6 anions (TcO4⁻, ReO4⁻, [RhCl6]³⁻, [IrCl6]³⁻, [PdCl4]²⁻,
-[PtCl4]²⁻); `report_neutral.png` and `report_lanl.png` show neutral rows only.
-Override with `--plot-subset {anion,neutral,all}` if you want something else.
+| set | results file | what is in it |
+|---|---|---|
+| `closed_shell` | `results.jsonl` | 36 metals, all RKS: 30 neutrals + the 6 anions (TcO4⁻, ReO4⁻, [RhCl6]³⁻, [IrCl6]³⁻, [PdCl4]²⁻, [PtCl4]²⁻) |
+| `open_shell` | `results_neutral.jsonl` | 36 metals, all neutral: 30 closed shell (RKS) + the same 6 species neutral and open shell (UKS, 2S = 1…3) |
+
+- **(a)** SCF wall time in seconds vs number of AOs, B3LYP, GPU (solid) and
+  CPU (dashed). Log–log, but the ticks are plain numbers (0.5, 1, 2 … 50 s;
+  50, 75, 100 … AOs), no scientific notation.
+- **(b)** Speedup `t(CPU) / t(GPU)` vs number of AOs, one line per functional
+  with a distinct marker; the horizontal line is parity.
+- **(c)** Heat map of the speedup, metal (rows, largest AO count at the top)
+  × functional (columns), colour on a log scale centred on 1× and every cell
+  annotated with the ratio.
+
+Points and cells where either device hit `max_cycle` without converging are
+drawn hollow (a, b) or outlined with a `*` (c): their wall time measures the
+cycle cap, not an SCF. Only the open-shell set has any (12 of its 216 pairs).
+
+```sh
+python make_figures.py                      # both sets -> figures/
+python make_figures.py --sets open_shell    # one set
+```
+
+What the two sets show (A100-40GB vs 16 CPU threads, def2-TZVP, direct SCF):
+
+| | closed shell | open shell |
+|---|---|---|
+| paired runs | 216 | 216 |
+| GPU faster in | 58 / 216 | 66 / 216 |
+| median speedup, all rows | 0.56× | 0.56× |
+| median speedup, ≥ 200 AO, LDA/GGA/mGGA | 6.3–6.5× | 6.2–6.4× |
+| median speedup, ≥ 200 AO, hybrids | 3.0–3.1× | 3.2–3.3× |
+| first metal with GPU faster, non-hybrid | 164 AO (MO₄) | 164 AO |
+| first metal with GPU faster, hybrid | 225 AO (NbCl₅) | 164 AO (TcO₄, UKS) |
+| B3LYP GPU wall time | 0.8–8.4 s | 0.8–46 s |
+| B3LYP CPU wall time | 0.2–25 s | 0.2–51 s |
+
+These molecules are small (35–262 AO): below ~150 AO the GPU run is dominated
+by fixed per-call overhead (kernel launches, grid setup, the ECP transform) and
+the CPU wins by 2–10×, most visibly for the hybrids whose exchange build is
+cheap at this size. The crossover is 150–200 AO and the ratio is still rising
+at the top of the range. The open-shell rows behave like the closed-shell ones
+of the same size: UKS doubles the work on both devices and the ratio is
+unchanged, except where an unconverged run pins one device at 100 cycles.
+
+**`make_report.py` — the per-run report (`report*.png`).** Same three panels,
+but filtered to one charge state so a single panel is never a mix of anions
+and neutrals: `report.png` (from `results.jsonl`) shows only its 6 anions;
+`report_neutral.png` and `report_lanl.png` show neutral rows only. Override
+with `--plot-subset {anion,neutral,all}` if you want something else. The
+markdown tables and CSV always cover every row in the results file.
 
 ## Settings
 

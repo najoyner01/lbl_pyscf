@@ -58,3 +58,4 @@ srun -n 1 --gpus-per-task=1 python benchmarks/inorganic_benchmark/run_bench.py \
 python benchmarks/inorganic_benchmark/make_report.py \
     --results benchmarks/inorganic_benchmark/results_neutral.jsonl \
     --prefix report_neutral
+python benchmarks/inorganic_benchmark/make_figures.py --sets open_shell
