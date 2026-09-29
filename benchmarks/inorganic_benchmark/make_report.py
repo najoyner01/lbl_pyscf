@@ -18,8 +18,18 @@
     python make_report.py                       # reads ./results.jsonl
     python make_report.py --results other.jsonl --prefix run2
 
+    # the neutral / open-shell set
+    python make_report.py --results results_neutral.jsonl --prefix report_neutral
+
 Outputs (next to the results file): <prefix>.md, <prefix>.csv, <prefix>.png.
 matplotlib is optional -- without it the tables and CSV are still written.
+
+Open-shell runs (`--systems neutral`) carry a `spin`, a `method` of `uks`, and
+<S^2>. The report adds a spin section for those: an unrestricted SCF can reach
+different symmetry-broken solutions on the two devices, which shows up as a huge
+`dE` that is NOT a numerical-accuracy failure. Comparing <S^2> between devices
+is what separates the two cases. Records without these fields are treated as
+restricted singlets, so old results files still render.
 """
 
 import argparse
@@ -33,6 +43,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # Energies are quoted to 1e-8 Ha; anything above this counts as a real
 # GPU/CPU disagreement rather than accumulated rounding.
 DE_TOL = 1e-8
+
+# <S^2> agreement between devices. Above this the two unrestricted SCFs are on
+# different solutions, so their energy difference says nothing about accuracy.
+DSS_TOL = 1e-4
 
 
 def parse_args(argv=None):
@@ -69,11 +83,22 @@ def pair_runs(runs):
     for rec in runs:
         key = (rec['formula'], rec['xc'])
         row = rows.setdefault(key, {
-            'element': rec['element'], 'formula': rec['formula'],
+            # `element` is the metal centre on the LANL set, where there is no
+            # one-compound-per-element mapping.
+            'element': rec.get('element') or rec.get('metal'),
+            'formula': rec['formula'],
             'xc': rec['xc'], 'nao': rec['nao'], 'natm': rec['natm'],
             'charge': rec['charge'], 'geometry': rec.get('geometry'),
+            # absent in results written before --systems/--method existed
+            'spin': rec.get('spin', 0), 'method': rec.get('method', 'rks'),
         })
         dev = rec['device']
+        if rec.get('skipped'):
+            # Not an error: the system was over --max-nao-cpu, so the CPU leg
+            # was never attempted. Kept distinct so the report does not read
+            # "too big to pair" as "the run broke".
+            row[f'{dev}_skipped'] = rec['skipped']
+            continue
         if rec.get('error'):
             row[f'{dev}_error'] = rec['error']
             continue
@@ -82,12 +107,23 @@ def pair_runs(runs):
         row[f'{dev}_conv'] = rec['converged']
         row[f'{dev}_cycles'] = rec['cycles']
         row[f'{dev}_ngrids'] = rec['ngrids']
+        if 's_squared' in rec:
+            row[f'{dev}_ss'] = rec['s_squared']
+            row[f'{dev}_mult'] = rec['multiplicity']
 
     for row in rows.values():
         if 'gpu_e' in row and 'cpu_e' in row:
             row['dE'] = abs(row['gpu_e'] - row['cpu_e'])
         if 'gpu_t' in row and 'cpu_t' in row:
             row['speedup'] = row['cpu_t'] / row['gpu_t']
+        if 'gpu_ss' in row and 'cpu_ss' in row:
+            row['dSS'] = abs(row['gpu_ss'] - row['cpu_ss'])
+        # <S^2> - S(S+1) for the requested spin: how far the converged
+        # unrestricted determinant is from the target spin state.
+        s = row['spin'] / 2.0
+        for dev in ('gpu', 'cpu'):
+            if f'{dev}_ss' in row:
+                row[f'{dev}_contam'] = row[f'{dev}_ss'] - s * (s + 1)
     return list(rows.values())
 
 
@@ -95,12 +131,51 @@ def fmt(value, spec='', dash='--'):
     return dash if value is None else format(value, spec)
 
 
+def pair(row, key, spec='', dash='--'):
+    """`gpu/cpu` for one per-device quantity, e.g. `56/44` or `6.0750/--`."""
+    return (f'{fmt(row.get("gpu_" + key), spec, dash)}/'
+            f'{fmt(row.get("cpu_" + key), spec, dash)}')
+
+
+def conv_cell(row):
+    """Per-device convergence as `yes/yes`, with any failure bolded so it is
+    visible when skimming. A device that never ran shows `--`."""
+    out = []
+    for dev in ('gpu', 'cpu'):
+        if row.get(f'{dev}_error'):
+            out.append('**err**')
+        elif row.get(f'{dev}_skipped'):
+            out.append('skip')
+        elif row.get(f'{dev}_conv') is True:
+            out.append('yes')
+        elif row.get(f'{dev}_conv') is False:
+            out.append('**NO**')
+        else:
+            out.append('--')
+    return '/'.join(out)
+
+
+def failures(rows):
+    """Every run where a device errored or hit the cycle cap without
+    converging, newest concern first. Used for the report's failure table and
+    the console summary -- the two places you look before anything else."""
+    out = []
+    for row in rows:
+        for dev in ('gpu', 'cpu'):
+            if row.get(f'{dev}_error') or row.get(f'{dev}_conv') is False:
+                out.append((row, dev))
+    return out
+
+
 def write_csv(path, rows):
     import csv
-    cols = ['element', 'formula', 'charge', 'geometry', 'natm', 'nao', 'xc',
+    cols = ['element', 'formula', 'charge', 'spin', 'method', 'geometry',
+            'natm', 'nao', 'xc',
             'gpu_e', 'cpu_e', 'dE', 'gpu_t', 'cpu_t', 'speedup',
             'gpu_cycles', 'cpu_cycles', 'gpu_conv', 'cpu_conv',
-            'gpu_ngrids', 'cpu_ngrids', 'gpu_error', 'cpu_error']
+            'gpu_ngrids', 'cpu_ngrids',
+            'gpu_ss', 'cpu_ss', 'dSS', 'gpu_contam', 'cpu_contam',
+            'gpu_error', 'cpu_error', 'gpu_skipped', 'cpu_skipped']
     with open(path, 'w', newline='') as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction='ignore')
         w.writeheader()
@@ -111,56 +186,201 @@ def write_csv(path, rows):
 def markdown(meta, rows, functionals, elements, png_name):
     out = []
     A = out.append
+    open_rows = [r for r in rows if r.get('spin', 0) != 0]
+    uks_rows = [r for r in rows if r.get('method') == 'uks']
+    set_name = meta.get('systems', 'singlet')
+
+    lanl = set_name == 'lanl'
+
     A('# ECP single-point benchmark: GPU4PySCF vs PySCF\n')
-    A('One closed-shell compound per element carrying a def2-ECP '
-      f'({len(elements)} elements), each run with {len(functionals)} '
-      'functionals on both devices.\n')
+    if lanl:
+        n_open = len({r['formula'] for r in open_rows})
+        A(f'{len({r["formula"] for r in rows})} lanthanide and actinide '
+          f'coordination complexes at experimental geometries '
+          f'({len(elements)} metals, {n_open} of them open shell), each run '
+          f'with {len(functionals)} functionals on both devices.\n')
+    elif open_rows:
+        n_open = len({r['formula'] for r in open_rows})
+        A(f'One neutral compound per element carrying a def2-ECP '
+          f'({len(elements)} elements, {n_open} of them open shell), each run '
+          f'with {len(functionals)} functionals on both devices.\n')
+    else:
+        A('One closed-shell compound per element carrying a def2-ECP '
+          f'({len(elements)} elements), each run with {len(functionals)} '
+          'functionals on both devices.\n')
 
     A('> [!NOTE]')
-    A('> Geometries are idealized VSEPR shapes with tabulated bond lengths, '
-      'not optimized. Both devices see identical coordinates, so GPU/CPU '
-      'comparisons are exact; the absolute energies are not thermochemical '
-      'reference values.\n')
+    if lanl:
+        A('> Geometries are experimental, not optimized. The basis is def2 '
+          'throughout, as in the rest of this directory, with one forced '
+          'substitution: PySCF\'s def2 sets stop before the f block, so each '
+          'f-block metal takes the Stuttgart-Koeln RSC ECP and valence basis. '
+          'Density fitting is on for both devices. Both devices see identical '
+          'coordinates, so GPU/CPU comparisons are exact; the absolute '
+          'energies are not thermochemical reference values.\n')
+    else:
+        A('> Geometries are idealized VSEPR shapes with tabulated bond '
+          'lengths, not optimized. Both devices see identical coordinates, so '
+          'GPU/CPU comparisons are exact; the absolute energies are not '
+          'thermochemical reference values.\n')
+
+    if lanl:
+        A('> [!WARNING]')
+        A('> The two devices build their own initial guesses, and on an '
+          'open-shell f element that is often enough to land them in '
+          'different SCF solutions -- `minao` alone differs by '
+          '`max|dm0_gpu - dm0_cpu| = 57.8` on PuN3O9Cl3. A large `dE` on this '
+          'set usually means "different solution", not "broken GPU kernel". '
+          'Check `converged`, `cycles` and `<S^2>` in the **Open-shell / '
+          'spin** section before reading any `dE`.\n')
+    elif open_rows:
+        A('> [!WARNING]')
+        A('> The open-shell species keep the bond length tabulated for the '
+          'corresponding anion in `systems.py`, and their multiplicities are '
+          'formal d-count assignments, not verified ground states. An '
+          'unrestricted SCF can also settle on different symmetry-broken '
+          'solutions on the two devices; where that happens `dE` is large for '
+          'reasons that have nothing to do with GPU accuracy. Check the '
+          '**Open-shell / spin** section below before reading any `dE` on a '
+          'UKS row.\n')
 
     A('## Settings\n')
     A('| key | value |')
     A('|---|---|')
-    for key in ('basis', 'grid', 'conv_tol', 'max_cycle', 'cpu_threads',
-                'repeat', 'gpu', 'contract_engine', 'cupy', 'pyscf',
-                'gpu4pyscf', 'git_commit', 'hostname', 'slurm_job_id',
+    for key in ('systems', 'method', 'basis', 'grid', 'conv_tol', 'max_cycle',
+                'density_fit', 'auxbasis', 'max_nao_cpu', 'conv_aids',
+                'cpu_threads', 'repeat', 'gpu', 'contract_engine', 'cupy',
+                'pyscf', 'gpu4pyscf', 'git_commit', 'hostname', 'slurm_job_id',
                 'timestamp'):
         if meta.get(key) is not None:
             A(f'| {key} | `{meta[key]}` |')
     A(f'| functionals | `{" ".join(functionals)}` |')
+    if uks_rows:
+        A(f'| SCF flavour | `{len(rows) - len(uks_rows)} RKS, '
+          f'{len(uks_rows)} UKS` |')
     A('')
-    A('CPU references are built fresh from the Mole (`pyscf.dft.RKS`), never '
-      'via `to_cpu()` of a converged GPU object -- that inherits the GPU '
-      'density and biases CPU timings low by ~6x.\n')
+    A('CPU references are built fresh from the Mole (`pyscf.dft.RKS` / '
+      '`pyscf.dft.UKS`), never via `to_cpu()` of a converged GPU object -- '
+      'that inherits the GPU density and biases CPU timings low by ~6x. The '
+      'restricted/unrestricted choice depends only on the molecule and the '
+      '`--method` flag, so both devices always run the same flavour.\n')
+
+    # ---- failures ----------------------------------------------------------
+    # Deliberately the first section after Settings: when a run breaks, the
+    # cycle count and <S^2> are what say whether it stalled, ran away from the
+    # target spin state, or died outright -- without paging through the full
+    # table to find it.
+    fails = failures(rows)
+    A('## Failures\n')
+    if not fails:
+        A('None: every run converged on both devices.\n')
+    else:
+        A(f'{len(fails)} device-run{"s" if len(fails) > 1 else ""} errored or '
+          'hit the cycle cap. `cyc` at the cap means the SCF was still moving '
+          'when it ran out; `contam` is `<S^2> - S(S+1)` against the '
+          'requested spin, so a large value means the determinant drifted off '
+          'the target state. The paired device is shown alongside for '
+          'contrast.\n')
+        A('| device | element | compound | 2S | functional | nao | converged '
+          '| cyc | <S^2> | contam | other device | note |')
+        A('|---|---|---|---:|---|---:|---|---:|---:|---:|---|---|')
+        for row, dev in sorted(
+                fails, key=lambda rd: (rd[1], rd[0]['element'], rd[0]['xc'])):
+            other = 'cpu' if dev == 'gpu' else 'gpu'
+            if row.get(f'{other}_error'):
+                peer = 'error'
+            elif row.get(f'{other}_skipped'):
+                peer = 'skipped'
+            elif row.get(f'{other}_conv') is True:
+                peer = f'ok, {fmt(row.get(f"{other}_cycles"), "d")} cyc'
+            elif row.get(f'{other}_conv') is False:
+                peer = f'also NO, {fmt(row.get(f"{other}_cycles"), "d")} cyc'
+            else:
+                peer = '--'
+            err = row.get(f'{dev}_error')
+            note = f'`{err[:50]}`' if err else 'hit cycle cap'
+            A(f'| **{dev.upper()}** | {row["element"]} | {row["formula"]} '
+              f'| {row.get("spin", 0)} | {row["xc"]} | {row["nao"]} '
+              f'| {"error" if err else "**NO**"} '
+              f'| {fmt(row.get(f"{dev}_cycles"), "d")} '
+              f'| {fmt(row.get(f"{dev}_ss"), ".4f")} '
+              f'| {fmt(row.get(f"{dev}_contam"), "+.4f")} '
+              f'| {peer} | {note} |')
+        A('')
 
     # ---- correctness -------------------------------------------------------
     A('## GPU vs CPU energy agreement\n')
     A(f'Worst |E_GPU - E_CPU| across functionals, per system. '
       f'Threshold {DE_TOL:.0e} Ha.\n')
-    A('| element | compound | chg | natm | nao | max abs dE (Ha) | worst functional | status |')
-    A('|---|---|---:|---:|---:|---:|---|---|')
+    A('| element | compound | chg | 2S | SCF | natm | nao | max abs dE (Ha) | worst functional | status |')
+    A('|---|---|---:|---:|---|---:|---:|---:|---|---|')
     for el in elements:
         sub = [r for r in rows if r['element'] == el and 'dE' in r]
         if not sub:
-            A(f'| {el} | -- | | | | -- | -- | no paired runs |')
+            A(f'| {el} | -- | | | | | | -- | -- | no paired runs |')
             continue
         worst = max(sub, key=lambda r: r['dE'])
         bad = [r for r in rows if r['element'] == el
                and (r.get('gpu_conv') is False or r.get('cpu_conv') is False)]
         errs = [r for r in rows if r['element'] == el
                 and (r.get('gpu_error') or r.get('cpu_error'))]
+        # A UKS pair on different symmetry-broken solutions fails dE for a
+        # reason that is not about GPU accuracy -- say which it is.
+        split = [r for r in rows if r['element'] == el
+                 and r.get('dSS', 0.0) > DSS_TOL]
         status = 'ok' if worst['dE'] < DE_TOL else f'**dE > {DE_TOL:.0e}**'
+        if split:
+            status += (f', {len(split)} run{"s" if len(split) > 1 else ""} on a '
+                       f'different SCF solution')
         if bad:
             status += f', {len(bad)} unconverged'
         if errs:
             status += f', {len(errs)} error'
-        A(f'| {el} | {worst["formula"]} | {worst["charge"]:+d} | {worst["natm"]} '
-          f'| {worst["nao"]} | {worst["dE"]:.2e} | {worst["xc"]} | {status} |')
+        A(f'| {el} | {worst["formula"]} | {worst["charge"]:+d} '
+          f'| {worst.get("spin", 0)} | {worst.get("method", "rks").upper()} '
+          f'| {worst["natm"]} | {worst["nao"]} | {worst["dE"]:.2e} '
+          f'| {worst["xc"]} | {status} |')
     A('')
+
+    # ---- open shell --------------------------------------------------------
+    if open_rows:
+        A('## Open-shell / spin\n')
+        A('Unrestricted runs only. `<S^2>` is the converged value on each '
+          'device; `contam` is `<S^2> - S(S+1)` against the requested spin '
+          '(large positive = the determinant is not the target spin state, '
+          'expected for these formal high-oxidation-state species). '
+          f'`d<S^2>` above {DSS_TOL:.0e} means the two devices converged to '
+          'DIFFERENT solutions, and the corresponding `dE` is meaningless as '
+          'an accuracy measure.\n')
+        A('| element | compound | 2S | target S(S+1) | functional | '
+          '<S^2> GPU | <S^2> CPU | d<S^2> | contam GPU | dE (Ha) | same solution? |')
+        A('|---|---|---:|---:|---|---:|---:|---:|---:|---:|---|')
+        for row in sorted(open_rows, key=lambda r: (r['element'], r['xc'])):
+            s = row['spin'] / 2.0
+            same = '--'
+            if 'dSS' in row:
+                same = 'yes' if row['dSS'] <= DSS_TOL else '**no**'
+            A(f'| {row["element"]} | {row["formula"]} | {row["spin"]} '
+              f'| {s * (s + 1):.2f} | {row["xc"]} '
+              f'| {fmt(row.get("gpu_ss"), ".4f")} '
+              f'| {fmt(row.get("cpu_ss"), ".4f")} '
+              f'| {fmt(row.get("dSS"), ".1e")} '
+              f'| {fmt(row.get("gpu_contam"), "+.4f")} '
+              f'| {fmt(row.get("dE"), ".2e")} | {same} |')
+        A('')
+
+        paired = [r for r in open_rows if 'dSS' in r]
+        agree = [r for r in paired if r['dSS'] <= DSS_TOL]
+        A(f'{len(agree)}/{len(paired)} unrestricted pairs reached the same '
+          'solution on both devices.')
+        if paired and len(agree) < len(paired):
+            A('')
+            A('> [!IMPORTANT]')
+            A('> Rows marked **no** are a UKS initial-guess / convergence '
+              'difference, not a GPU integral or XC error. To compare those '
+              'systems numerically, restart both devices from the same '
+              'converged density, or exclude them from the dE statistics.')
+        A('')
 
     # ---- speedup matrix ---------------------------------------------------
     A('## Speedup (CPU wall time / GPU wall time)\n')
@@ -204,20 +424,32 @@ def markdown(meta, rows, functionals, elements, png_name):
 
     # ---- full table -------------------------------------------------------
     A('## Full results\n')
-    A('| element | compound | nao | functional | E_GPU (Ha) | E_CPU (Ha) | '
-      'dE (Ha) | t_GPU (s) | t_CPU (s) | speedup | cyc GPU/CPU |')
-    A('|---|---|---:|---|---:|---:|---:|---:|---:|---:|---|')
+    A('Every per-device column is `GPU/CPU`. `conv` is the SCF convergence '
+      'flag, `cyc` the cycle count and `<S^2>` the converged spin '
+      'expectation -- the three numbers to read together when a run looks '
+      'wrong. A **NO** in `conv` means that device hit the cycle cap, so its '
+      'energy and any `dE` built from it are not converged values.\n')
+    A('| element | compound | 2S | SCF | nao | functional | E_GPU (Ha) | '
+      'E_CPU (Ha) | dE (Ha) | t_GPU (s) | t_CPU (s) | speedup | conv | '
+      'cyc | <S^2> |')
+    A('|---|---|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|')
     for row in sorted(rows, key=lambda r: (r['nao'], r['element'], r['xc'])):
+        head = (f'| {row["element"]} | {row["formula"]} | {row.get("spin", 0)} '
+                f'| {row.get("method", "rks").upper()} | {row["nao"]} ')
+        tail = (f'| {conv_cell(row)} | {pair(row, "cycles", "d")} '
+                f'| {pair(row, "ss", ".4f")} |')
         err = row.get('gpu_error') or row.get('cpu_error')
         if err:
-            A(f'| {row["element"]} | {row["formula"]} | {row["nao"]} | '
-              f'{row["xc"]} | ' + ' | '.join(['--'] * 6) + f' | `{err[:60]}` |')
+            # Still emit conv/cyc/<S^2>: on a partial failure the surviving
+            # device's numbers are exactly what diagnoses the dead one.
+            A(head + f'| {row["xc"]} | `{err[:60]}` | '
+              + ' | '.join(['--'] * 5) + ' ' + tail)
             continue
-        A(f'| {row["element"]} | {row["formula"]} | {row["nao"]} | {row["xc"]} '
+        A(head + f'| {row["xc"]} '
           f'| {fmt(row.get("gpu_e"), ".8f")} | {fmt(row.get("cpu_e"), ".8f")} '
           f'| {fmt(row.get("dE"), ".2e")} | {fmt(row.get("gpu_t"), ".2f")} '
           f'| {fmt(row.get("cpu_t"), ".2f")} | {fmt(row.get("speedup"), ".2f")} '
-          f'| {fmt(row.get("gpu_cycles"), "d")}/{fmt(row.get("cpu_cycles"), "d")} |')
+          + tail)
     A('')
 
     if png_name:
@@ -389,16 +621,28 @@ def plot(rows, functionals, path, meta):
 
         # (d) GPU/CPU energy agreement
         ax = axes[1][1]
-        pts = [(r['nao'], max(r['dE'], 1e-16), r['xc'])
+        pts = [(r['nao'], max(r['dE'], 1e-16), r['xc'], r.get('spin', 0) != 0)
                for r in rows if 'dE' in r]
+        any_open = any(op for *_, op in pts)
+        # Open-shell (UKS) points get a triangle: their dE can be dominated by
+        # the two devices landing on different symmetry-broken solutions, so
+        # they must not be read as the restricted accuracy floor.
         for xc in functionals:
-            sub = [(n, d) for n, d, x in pts if x == xc]
-            if sub:
-                ax.scatter([n for n, _ in sub], [d for _, d in sub], s=55,
-                           color=colors[xc], label=xc, alpha=0.85,
+            for open_shell, marker, size in ((False, 'o', 55), (True, '^', 90)):
+                sub = [(n, d) for n, d, x, op in pts
+                       if x == xc and op == open_shell]
+                if not sub:
+                    continue
+                ax.scatter([n for n, _ in sub], [d for _, d in sub], s=size,
+                           marker=marker, color=colors[xc],
+                           label=xc if not open_shell else None, alpha=0.85,
                            edgecolors='white', linewidths=0.8, zorder=3)
         ax.axhline(DE_TOL, color='k', ls='--', lw=2.2, zorder=2,
                    label=f'{DE_TOL:.0e} Ha threshold')
+        if any_open:
+            ax.scatter([], [], marker='^', s=90, color='0.35',
+                       edgecolors='white', linewidths=0.8,
+                       label='open shell (UKS)')
         ax.set_xscale('log'); ax.set_yscale('log')
         ax.set_xlabel('Number of AOs')
         ax.set_ylabel('|E(GPU) − E(CPU)|   (Ha)')
@@ -460,12 +704,21 @@ def main(argv=None):
               f'min {min(sp):.2f}x, max {max(sp):.2f}x')
         print(f'worst energy deviation: {worst["dE"]:.2e} Ha '
               f'({worst["formula"]}, {worst["xc"]})')
-    bad = [r for r in rows if r.get('gpu_conv') is False or r.get('cpu_conv') is False]
-    err = [r for r in rows if r.get('gpu_error') or r.get('cpu_error')]
-    if bad:
-        print(f'unconverged: {", ".join(sorted({r["formula"] for r in bad}))}')
-    if err:
-        print(f'errors:      {", ".join(sorted({r["formula"] for r in err}))}')
+    # Failures with the two numbers that diagnose them, rather than a bare
+    # list of formulas you then have to go look up.
+    fails = failures(rows)
+    if fails:
+        print(f'\n{len(fails)} failed device-run(s) '
+              '[device system xc: cycles, <S^2>, contam]')
+        for row, dev in sorted(
+                fails, key=lambda rd: (rd[1], rd[0]['element'], rd[0]['xc'])):
+            err = row.get(f'{dev}_error')
+            detail = (f'cyc={fmt(row.get(f"{dev}_cycles"), "d")} '
+                      f'<S^2>={fmt(row.get(f"{dev}_ss"), ".4f")} '
+                      f'contam={fmt(row.get(f"{dev}_contam"), "+.4f")}')
+            reason = f'ERROR {err[:50]}' if err else 'not converged'
+            print(f'  {dev:3s} {row["formula"]:26s} {row["xc"]:8s} '
+                  f'{reason:20s} {detail}')
     return 0
 
 

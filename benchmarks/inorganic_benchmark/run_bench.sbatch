@@ -14,7 +14,7 @@
 
 # ECP single-point benchmark over the def2-ECP elements, GPU vs CPU.
 #
-#   mkdir -p logs && sbatch benchmarks/ecp_ptable/run_bench.sbatch
+#   mkdir -p logs && sbatch benchmarks/inorganic_benchmark/run_bench.sbatch
 #
 # --exclusive so no co-tenant job perturbs the CPU timings; the CPU side is
 # still pinned to 16 threads (see below) because that is the comparison point,
@@ -36,11 +36,11 @@ export OMP_NUM_THREADS=16
 nvidia-smi -L
 python -c "import cupy; print('cupy', cupy.__version__, 'cc', cupy.cuda.Device(0).compute_capability)"
 
-srun -n 1 --gpus-per-task=1 python benchmarks/ecp_ptable/run_bench.py \
+srun -n 1 --gpus-per-task=1 python benchmarks/inorganic_benchmark/run_bench.py \
     --basis def2-tzvp \
     --cpu-threads 16 \
     --grid 75 302 \
     --conv-tol 1e-9 \
     --resume
 
-python benchmarks/ecp_ptable/make_report.py
+python benchmarks/inorganic_benchmark/make_report.py
