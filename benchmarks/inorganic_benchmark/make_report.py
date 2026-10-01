@@ -88,7 +88,10 @@ def pair_runs(runs):
     """Collapse per-device records into one row per (formula, functional)."""
     rows = OrderedDict()
     for rec in runs:
-        key = (rec['formula'], rec['xc'])
+        # basis is part of the key: the TM ladder runs one compound at three
+        # bases, and those are three different rows. Older files carry one
+        # basis throughout, so this changes nothing for them.
+        key = (rec['formula'], rec.get('basis'), rec['xc'])
         row = rows.setdefault(key, {
             # `element` is the metal centre on the LANL set, where there is no
             # one-compound-per-element mapping.
@@ -96,6 +99,9 @@ def pair_runs(runs):
             'formula': rec['formula'],
             'xc': rec['xc'], 'nao': rec['nao'], 'natm': rec['natm'],
             'charge': rec['charge'], 'geometry': rec.get('geometry'),
+            'basis': rec.get('basis'),
+            # DZ/TZ/QZ on the ladder set; falls back to the basis name
+            'zeta': rec.get('zeta') or rec.get('basis'),
             # absent in results written before --systems/--method existed
             'spin': rec.get('spin', 0), 'method': rec.get('method', 'rks'),
         })
@@ -177,7 +183,7 @@ def failures(rows):
 def write_csv(path, rows):
     import csv
     cols = ['element', 'formula', 'charge', 'spin', 'method', 'geometry',
-            'natm', 'nao', 'xc',
+            'basis', 'zeta', 'natm', 'nao', 'xc',
             'gpu_e', 'cpu_e', 'dE', 'gpu_t', 'cpu_t', 'speedup',
             'gpu_cycles', 'cpu_cycles', 'gpu_conv', 'cpu_conv',
             'gpu_ngrids', 'cpu_ngrids',
@@ -198,9 +204,16 @@ def markdown(meta, rows, functionals, elements, png_name):
     set_name = meta.get('systems', 'singlet')
 
     lanl = set_name == 'lanl'
+    bases = list(OrderedDict.fromkeys(r['zeta'] for r in rows))
 
     A('# ECP single-point benchmark: GPU4PySCF vs PySCF\n')
-    if lanl:
+    if set_name == 'tm':
+        A(f'{len({r["formula"] for r in rows})} closed-shell transition-metal '
+          f'complexes, each carrying a def2-ECP, run at {len(bases)} bases '
+          f'({", ".join(bases)}) with {len(functionals)} functionals on both '
+          'devices. No 5Z rung: gpu4pyscf\'s ECP kernels stop at g functions '
+          '(see `systems_tm.py`).\n')
+    elif lanl:
         n_open = len({r['formula'] for r in open_rows})
         A(f'{len({r["formula"] for r in rows})} lanthanide and actinide '
           f'coordination complexes at experimental geometries '
@@ -319,21 +332,21 @@ def markdown(meta, rows, functionals, elements, png_name):
     A('## GPU vs CPU energy agreement\n')
     A(f'Worst |E_GPU - E_CPU| across functionals, per system. '
       f'Threshold {DE_TOL:.0e} Ha.\n')
-    A('| element | compound | chg | 2S | SCF | natm | nao | max abs dE (Ha) | worst functional | status |')
+    A('| system | compound | chg | 2S | SCF | natm | nao | max abs dE (Ha) | worst functional | status |')
     A('|---|---|---:|---:|---|---:|---:|---:|---|---|')
     for el in elements:
-        sub = [r for r in rows if r['element'] == el and 'dE' in r]
+        sub = [r for r in rows if r['group'] == el and 'dE' in r]
         if not sub:
             A(f'| {el} | -- | | | | | | -- | -- | no paired runs |')
             continue
         worst = max(sub, key=lambda r: r['dE'])
-        bad = [r for r in rows if r['element'] == el
+        bad = [r for r in rows if r['group'] == el
                and (r.get('gpu_conv') is False or r.get('cpu_conv') is False)]
-        errs = [r for r in rows if r['element'] == el
+        errs = [r for r in rows if r['group'] == el
                 and (r.get('gpu_error') or r.get('cpu_error'))]
         # A UKS pair on different symmetry-broken solutions fails dE for a
         # reason that is not about GPU accuracy -- say which it is.
-        split = [r for r in rows if r['element'] == el
+        split = [r for r in rows if r['group'] == el
                  and r.get('dSS', 0.0) > DSS_TOL]
         status = 'ok' if worst['dE'] < DE_TOL else f'**dE > {DE_TOL:.0e}**'
         if split:
@@ -393,10 +406,10 @@ def markdown(meta, rows, functionals, elements, png_name):
     A('## Speedup (CPU wall time / GPU wall time)\n')
     A(f'CPU at {meta.get("cpu_threads", "?")} threads, single GPU. '
       'Values below 1.00 mean the CPU was faster.\n')
-    A('| element | compound | nao | ' + ' | '.join(functionals) + ' | mean |')
+    A('| system | compound | nao | ' + ' | '.join(functionals) + ' | mean |')
     A('|---|---|---:|' + '---:|' * (len(functionals) + 1))
     for el in elements:
-        sub = {r['xc']: r for r in rows if r['element'] == el}
+        sub = {r['xc']: r for r in rows if r['group'] == el}
         if not sub:
             continue
         any_row = next(iter(sub.values()))
@@ -410,6 +423,33 @@ def markdown(meta, rows, functionals, elements, png_name):
         A(f'| {el} | {any_row["formula"]} | {any_row["nao"]} | '
           + ' | '.join(cells) + f' | {fmt(mean, ".2f")} |')
     A('')
+
+    # ---- per-basis summary (ladder set only) -----------------------------
+    if len(bases) > 1:
+        A('## Per-basis summary\n')
+        A('Median speedup at each rung of the ladder, per functional, over '
+          'every system that paired. `nao` is the range of AO counts at that '
+          'rung.\n')
+        A('| basis | nao | ' + ' | '.join(functionals) + ' | GPU faster in |')
+        A('|---|---|' + '---:|' * (len(functionals) + 1))
+        for z in bases:
+            zrows = [r for r in rows if r['zeta'] == z and 'speedup' in r]
+            if not zrows:
+                continue
+            naos = [r['nao'] for r in zrows]
+            cells = []
+            for xc in functionals:
+                sp = sorted(r['speedup'] for r in zrows if r['xc'] == xc)
+                if not sp:
+                    cells.append('--')
+                    continue
+                mid = (sp[len(sp) // 2] if len(sp) % 2
+                       else (sp[len(sp)//2 - 1] + sp[len(sp)//2]) / 2)
+                cells.append(f'{mid:.2f}')
+            faster = sum(1 for r in zrows if r['speedup'] > 1)
+            A(f'| {z} | {min(naos)}-{max(naos)} | ' + ' | '.join(cells)
+              + f' | {faster}/{len(zrows)} |')
+        A('')
 
     # ---- per-functional summary ------------------------------------------
     A('## Per-functional summary\n')
@@ -436,12 +476,13 @@ def markdown(meta, rows, functionals, elements, png_name):
       'expectation -- the three numbers to read together when a run looks '
       'wrong. A **NO** in `conv` means that device hit the cycle cap, so its '
       'energy and any `dE` built from it are not converged values.\n')
-    A('| element | compound | 2S | SCF | nao | functional | E_GPU (Ha) | '
+    A('| element | compound | basis | 2S | SCF | nao | functional | E_GPU (Ha) | '
       'E_CPU (Ha) | dE (Ha) | t_GPU (s) | t_CPU (s) | speedup | conv | '
       'cyc | <S^2> |')
-    A('|---|---|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|')
+    A('|---|---|---|---:|---|---:|---|---:|---:|---:|---:|---:|---:|---|---:|---:|')
     for row in sorted(rows, key=lambda r: (r['nao'], r['element'], r['xc'])):
-        head = (f'| {row["element"]} | {row["formula"]} | {row.get("spin", 0)} '
+        head = (f'| {row["element"]} | {row["formula"]} | {row["zeta"]} '
+                f'| {row.get("spin", 0)} '
                 f'| {row.get("method", "rks").upper()} | {row["nao"]} ')
         tail = (f'| {conv_cell(row)} | {pair(row, "cycles", "d")} '
                 f'| {pair(row, "ss", ".4f")} |')
@@ -519,6 +560,8 @@ def select_plot_subset(rows, meta, choice):
     if choice == 'all':
         return rows, None
     if choice == 'auto':
+        if systems == 'tm':
+            return rows, None           # the ladder mixes charges on purpose
         want = 'anion' if systems == 'singlet' else 'neutral'
     else:
         want = choice
@@ -619,12 +662,12 @@ def plot(rows, functionals, path, meta, subset_label=None):
         # (c) speedup heat map, systems ordered by size -- spans the full
         # bottom row now that panel (d) is gone
         ax = fig.add_subplot(gs[1, :])
-        order = sorted({(r['nao'], r['element']) for r in rows})
+        order = sorted({(r['nao'], r['group']) for r in rows})
         els = [el for _, el in order]
         grid = np.full((len(els), len(functionals)), np.nan)
         for i, el in enumerate(els):
             for j, xc in enumerate(functionals):
-                hit = [r for r in rows if r['element'] == el and r['xc'] == xc
+                hit = [r for r in rows if r['group'] == el and r['xc'] == xc
                        and 'speedup' in r]
                 if hit:
                     grid[i, j] = hit[0]['speedup']
@@ -686,7 +729,13 @@ def main(argv=None):
     # Preserve the order the driver used, not alphabetical.
     functionals = meta.get('functionals') or list(
         OrderedDict.fromkeys(r['xc'] for r in rows))
-    elements = list(OrderedDict.fromkeys(r['element'] for r in rows))
+    # Rows are grouped by metal in the tables. On the ladder set one metal
+    # has a row per basis, so the group is "metal zeta" there and the tables
+    # read DZ/TZ/QZ as separate systems.
+    ladder = len({r.get('basis') for r in rows}) > 1
+    for r in rows:
+        r['group'] = f"{r['element']} {r['zeta']}" if ladder else r['element']
+    elements = list(OrderedDict.fromkeys(r['group'] for r in rows))
 
     outdir = os.path.dirname(os.path.abspath(args.results))
     csv_path = os.path.join(outdir, f'{args.prefix}.csv')

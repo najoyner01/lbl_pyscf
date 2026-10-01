@@ -24,7 +24,18 @@ that into tables and figures.
     python run_bench.py --devices gpu         # GPU only
     python run_bench.py --resume              # skip records already present
 
-THREE MOLECULE SETS -- `--systems`.
+FOUR MOLECULE SETS -- `--systems`.
+
+`--systems tm` (`systems_tm.py`) is the 19 closed-shell transition-metal
+complexes of `systems.py` (Y-Cd, Hf-Hg) run up a BASIS LADDER: def2-SVP,
+def2-TZVP and def2-QZVP (`--bases`, labelled DZ/TZ/QZ in the report) with a
+trimmed functional list (PBE, B3LYP, PBE0), so the speedup can be read as a
+function of AO count from ~50 to ~500 AO. 5Z is not offered: gpu4pyscf's ECP
+kernels stop at g functions (see `systems_tm.py`). All RKS, direct SCF.
+
+    python run_bench.py --systems tm                       # full ladder
+    python run_bench.py --systems tm --bases def2-tzvp     # one rung
+    python run_bench.py --systems tm --only W Pt --devices gpu
 
 `--systems singlet` (default, `systems.py`) keeps every compound closed shell by
 using anions where the neutral species is not a singlet, so the whole sweep runs
@@ -117,6 +128,10 @@ DEFAULT_FUNCTIONALS = ['svwn', 'pbe', 'tpss', 'b3lyp', 'pbe0', 'm06-2x']
 # oxidation state for the Eu rows where hybrids get it right.
 LANL_FUNCTIONALS = ['pbe', 'b3lyp']
 
+# The TM ladder multiplies every system by three bases, so it runs a narrower
+# ladder too: one GGA and the two most-used global hybrids.
+TM_FUNCTIONALS = ['pbe', 'b3lyp', 'pbe0']
+
 # SCF cycle caps. The LANL systems are large, unrestricted and f-open-shell;
 # 100 cycles is not enough headroom even on the rows the spreadsheet does not
 # flag. Applied identically on both devices.
@@ -124,7 +139,7 @@ DEFAULT_MAX_CYCLE = 100
 LANL_MAX_CYCLE = 200
 
 DEFAULT_OUT = {'singlet': 'results.jsonl', 'neutral': 'results_neutral.jsonl',
-               'lanl': 'results_lanl.jsonl'}
+               'lanl': 'results_lanl.jsonl', 'tm': 'results_tm.jsonl'}
 
 # Above this many AO the CPU leg of the LANL set is skipped rather than run;
 # see --max-nao-cpu. 1800 keeps 21 of the 39 systems paired.
@@ -140,6 +155,8 @@ def load_systems(which):
         import systems_neutral as mod
     elif which == 'lanl':
         import systems_lanl as mod
+    elif which == 'tm':
+        import systems_tm as mod
     else:
         import systems as mod
     return mod
@@ -196,14 +213,16 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--systems', default='singlet',
-                   choices=['singlet', 'neutral', 'lanl'],
+                   choices=['singlet', 'neutral', 'lanl', 'tm'],
                    help='molecule table: "singlet" = systems.py (anions where '
                         'the neutral is open shell, all RKS); "neutral" = '
                         'systems_neutral.py (same 36 compounds and coordinates, '
                         'no anions, six of them open shell); "lanl" = '
                         'systems_lanl.py (39 f-element complexes at '
                         'experimental geometries, Stuttgart RSC on the metal, '
-                        'density fitted)')
+                        'density fitted); "tm" = systems_tm.py (the 19 '
+                        'transition metals of systems.py up the def2 '
+                        'DZ/TZ/QZ ladder, see --bases)')
     p.add_argument('--method', default='auto', choices=['auto', 'uks'],
                    help='"auto" = RKS at spin 0, UKS otherwise; "uks" = '
                         'unrestricted for everything, including the singlets')
@@ -212,9 +231,15 @@ def parse_args(argv=None):
                         'On --systems lanl this sets everything EXCEPT the '
                         'f-block metal, which always takes stuttgart-rsc '
                         'because def2 does not reach the f block')
+    p.add_argument('--bases', nargs='+', default=None,
+                   help='run every system at each of these bases in turn; '
+                        'default is the def2 DZ/TZ/QZ ladder on --systems tm '
+                        'and [--basis] otherwise. Records carry `basis` and '
+                        '`zeta`, and --resume keys on the basis')
     p.add_argument('--functionals', nargs='+', default=None,
                    help=f'default {" ".join(DEFAULT_FUNCTIONALS)}; on '
-                        f'--systems lanl {" ".join(LANL_FUNCTIONALS)}')
+                        f'--systems lanl {" ".join(LANL_FUNCTIONALS)}; on '
+                        f'--systems tm {" ".join(TM_FUNCTIONALS)}')
     p.add_argument('--devices', nargs='+', default=['gpu', 'cpu'],
                    choices=['gpu', 'cpu'])
     p.add_argument('--only', nargs='*', default=None,
@@ -264,8 +289,21 @@ def parse_args(argv=None):
     # is deliberately NOT one of these: the LANL set runs the same def2-TZVP
     # as the rest of the directory, and substitutes the metal internally.
     lanl = args.systems == 'lanl'
+    tm = args.systems == 'tm'
     if args.functionals is None:
-        args.functionals = LANL_FUNCTIONALS if lanl else DEFAULT_FUNCTIONALS
+        if lanl:
+            args.functionals = LANL_FUNCTIONALS
+        elif tm:
+            args.functionals = TM_FUNCTIONALS
+        else:
+            args.functionals = DEFAULT_FUNCTIONALS
+    if args.bases is None:
+        if tm:
+            import systems_tm
+            args.bases = list(systems_tm.LADDER.values())
+        else:
+            args.bases = [args.basis]
+    args.bases = [b.lower() for b in args.bases]
     if args.density_fit is None:
         args.density_fit = lanl
     if args.max_cycle is None:
@@ -340,6 +378,7 @@ def metadata(args):
         'systems': args.systems,
         'method': args.method,
         'basis': args.basis,
+        'bases': args.bases,
         'functionals': args.functionals,
         'devices': args.devices,
         'grid': list(args.grid),
@@ -467,8 +506,8 @@ def sync_gpu():
     cupy.cuda.Stream.null.synchronize()
 
 
-def run_one(device, entry, xc, args):
-    """Time one SCF. Returns a dict of results; raises on failure.
+def run_one(device, entry, xc, args, basis):
+    """Time one SCF at `basis`. Returns a dict of results; raises on failure.
 
     The Mole is rebuilt here, per device and per repeat, rather than shared:
     a Mole carries no SCF state, but the integral layers on both sides cache
@@ -479,7 +518,7 @@ def run_one(device, entry, xc, args):
     build_mol = load_systems(args.systems).build_mol
     best = None
     for _ in range(max(1, args.repeat)):
-        mol = build_mol(entry, args.basis)
+        mol = build_mol(entry, basis)
         mf = build_mf(device, mol, xc, args, entry)
         if device == 'gpu':
             sync_gpu()
@@ -517,13 +556,18 @@ def warmup(functionals, args, need_uks=False):
     RKS and UKS drive different numint kernels, so an open-shell sweep has to
     warm both -- otherwise the first UKS system absorbs the compile cost. The
     LANL set additionally warms a Stuttgart-RSC f-element and, when DF is on,
-    the density-fitted path, for the same reason."""
+    the density-fitted path, for the same reason.
+
+    The RKS pass runs once per basis in the ladder: a higher rung brings in
+    higher angular momentum (def2-QZVP puts g functions on the metal), and the
+    integral and numint kernels for a new l are compiled on first use."""
     from pyscf import gto
     from gpu4pyscf.dft import rks, uks
 
-    passes = [('RKS', rks.RKS, gto.M(atom='I 0 0 0; H 0 0 1.61',
-                                     basis='def2-svp', ecp='def2-svp',
-                                     verbose=0))]
+    passes = [(f'RKS/{basis}', rks.RKS,
+               gto.M(atom='Ag 0 0 0; Cl 0 0 2.28', basis=basis, ecp=basis,
+                     verbose=0))
+              for basis in args.bases]
     if need_uks:
         passes.append(('UKS', uks.UKS, gto.M(atom='I 0 0 0', basis='def2-svp',
                                              ecp='def2-svp', spin=1, verbose=0)))
@@ -562,6 +606,9 @@ def main(argv=None):
 
     sysmod = load_systems(args.systems)
     build_mol = sysmod.build_mol
+    # `zeta_label` exists only on the ladder set; elsewhere the label is the
+    # basis name itself.
+    zeta_label = getattr(sysmod, 'zeta_label', lambda basis: basis)
 
     entries = list(sysmod.iter_systems(args.only))
     if not entries:
@@ -572,13 +619,17 @@ def main(argv=None):
                     for e in entries}
     n_open = sum(1 for e in entries if entry_spin(e) != 0)
 
-    todo = [(e, xc, dev) for e in entries for xc in args.functionals
-            for dev in args.devices]
+    # Basis is the OUTER loop: the whole set finishes at one rung before the
+    # next starts, so a job killed at the wall clock leaves complete rungs
+    # rather than a ragged ladder.
+    todo = [(basis, e, xc, dev) for basis in args.bases for e in entries
+            for xc in args.functionals for dev in args.devices]
     done = load_done(args.out) if args.resume else set()
 
     print(f'systems={len(entries)} ({n_open} open shell) '
-          f'functionals={len(args.functionals)} devices={args.devices} '
-          f'-> {len(todo)} runs, {len(done)} already recorded')
+          f'bases={args.bases} functionals={len(args.functionals)} '
+          f'devices={args.devices} -> {len(todo)} runs, '
+          f'{len(done)} already recorded')
     if args.density_fit:
         print(f'density fitting ON, auxbasis={args.auxbasis}')
     if args.max_nao_cpu:
@@ -586,19 +637,19 @@ def main(argv=None):
 
     if args.dry_run:
         # nao needs a Mole, which is cheap (milliseconds) next to an SCF.
-        for entry, xc, dev in todo:
+        for basis, entry, xc, dev in todo:
             key = entry_key(entry)
             meth = 'uks' if unrestricted[key] else 'rks'
-            nao = build_mol(entry, args.basis).nao
+            nao = build_mol(entry, basis).nao
             if cpu_skipped(dev, nao, args):
                 flag = 'cap '
-            elif (key, xc, args.basis, dev, meth) in done:
+            elif (key, xc, basis, dev, meth) in done:
                 flag = 'skip'
             else:
                 flag = 'run '
             aids = 'aids' if scf_aids(entry, args) else ''
-            print(f'  {flag} {entry_element(entry):3s} {key:26s} '
-                  f'2S={entry_spin(entry)} nao={nao:5d} '
+            print(f'  {flag} {zeta_label(basis):9s} {entry_element(entry):3s} '
+                  f'{key:26s} 2S={entry_spin(entry)} nao={nao:5d} '
                   f'{xc:8s} {meth} {dev:3s} {aids}')
         return 0
 
@@ -610,10 +661,12 @@ def main(argv=None):
     t_start = time.perf_counter()
     n_ok = n_skip = n_fail = n_cap = 0
 
-    for entry in entries:
+    for basis in args.bases:
+      zeta = zeta_label(basis)
+      for entry in entries:
         element, formula = entry_element(entry), entry_key(entry)
         # Metadata only -- never used for an SCF; run_one() builds its own.
-        mol_meta = build_mol(entry, args.basis)
+        mol_meta = build_mol(entry, basis)
         method = 'uks' if unrestricted[formula] else 'rks'
         aids = scf_aids(entry, args)
         base = {
@@ -623,7 +676,8 @@ def main(argv=None):
             'charge': mol_meta.charge,
             'spin': entry_spin(entry),
             'method': method,
-            'basis': args.basis,
+            'basis': basis,
+            'zeta': zeta,
             'natm': int(mol_meta.natm),
             'nao': int(mol_meta.nao),
             'nelectron': int(mol_meta.nelectron),
@@ -634,9 +688,10 @@ def main(argv=None):
             **aids,
             **entry_extra(entry),
         }
+        tag = f'{zeta:4s} {element:3s} {formula:12s}'
         for xc in args.functionals:
             for device in args.devices:
-                if (formula, xc, args.basis, device, method) in done:
+                if (formula, xc, basis, device, method) in done:
                     n_skip += 1
                     continue
                 if cpu_skipped(device, mol_meta.nao, args):
@@ -645,12 +700,12 @@ def main(argv=None):
                               f'{args.max_nao_cpu}')
                     append(args.out, dict(base, xc=xc, device=device,
                                           skipped=reason))
-                    print(f'{element:3s} {formula:26s} nao={mol_meta.nao:4d} '
+                    print(f'{tag} nao={mol_meta.nao:4d} '
                           f'{xc:8s} {device:3s}  SKIPPED {reason}', flush=True)
                     continue
                 rec = dict(base, xc=xc, device=device)
                 try:
-                    rec.update(run_one(device, entry, xc, args))
+                    rec.update(run_one(device, entry, xc, args, basis))
                     n_ok += 1
                     status = (f"E={rec['e_tot']:.8f} {rec['wall']:7.2f}s "
                               f"cyc={rec['cycles']:>3d}"
@@ -663,7 +718,7 @@ def main(argv=None):
                     status = f'FAILED {rec["error"][:70]}'
                     free_gpu()
                 append(args.out, rec)
-                print(f'{element:3s} {formula:26s} nao={rec["nao"]:4d} '
+                print(f'{tag} nao={rec["nao"]:4d} '
                       f'{xc:8s} {device:3s}  {status}', flush=True)
 
     dt = time.perf_counter() - t_start
