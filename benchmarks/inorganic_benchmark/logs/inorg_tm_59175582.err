@@ -1,0 +1,74 @@
+/global/u1/n/najoyner/lbl_pyscf/gpu4pyscf/lib/cutensor.py:154: UserWarning: using cupy as the tensor contraction engine.
+  warnings.warn(f'using {contract_engine} as the tensor contraction engine.')
+ECP def2-svp not found for  Cl
+ECP def2-tzvp not found for  Cl
+ECP def2-qzvp not found for  Cl
+ECP def2-svp not found for  H
+ECP def2-svp not found for  Cl
+ECP def2-svp not found for  Cl
+ECP def2-svp not found for  F
+ECP def2-svp not found for  O
+ECP def2-svp not found for  O
+ECP def2-svp not found for  Cl
+ECP def2-svp not found for  Cl
+ECP def2-svp not found for  Cl
+ECP def2-svp not found for  Cl
+ECP def2-svp not found for  Cl
+ECP def2-svp not found for  Cl
+ECP def2-svp not found for  F
+ECP def2-svp not found for  O
+ECP def2-svp not found for  O
+ECP def2-svp not found for  Cl
+ECP def2-svp not found for  Cl
+ECP def2-svp not found for  Cl
+ECP def2-svp not found for  Cl
+ECP def2-tzvp not found for  H
+ECP def2-tzvp not found for  Cl
+ECP def2-tzvp not found for  Cl
+ECP def2-tzvp not found for  F
+ECP def2-tzvp not found for  O
+ECP def2-tzvp not found for  O
+ECP def2-tzvp not found for  Cl
+ECP def2-tzvp not found for  Cl
+ECP def2-tzvp not found for  Cl
+ECP def2-tzvp not found for  Cl
+ECP def2-tzvp not found for  Cl
+ECP def2-tzvp not found for  Cl
+ECP def2-tzvp not found for  F
+ECP def2-tzvp not found for  O
+ECP def2-tzvp not found for  O
+ECP def2-tzvp not found for  Cl
+ECP def2-tzvp not found for  Cl
+ECP def2-tzvp not found for  Cl
+ECP def2-tzvp not found for  Cl
+ECP def2-qzvp not found for  H
+ECP def2-qzvp not found for  Cl
+ECP def2-qzvp not found for  Cl
+ECP def2-qzvp not found for  F
+ECP def2-qzvp not found for  O
+ECP def2-qzvp not found for  O
+ECP def2-qzvp not found for  Cl
+ECP def2-qzvp not found for  Cl
+ECP def2-qzvp not found for  Cl
+ECP def2-qzvp not found for  Cl
+ECP def2-qzvp not found for  Cl
+ECP def2-qzvp not found for  Cl
+ECP def2-qzvp not found for  F
+ECP def2-qzvp not found for  O
+ECP def2-qzvp not found for  O
+ECP def2-qzvp not found for  Cl
+ECP def2-qzvp not found for  Cl
+ECP def2-qzvp not found for  Cl
+ECP def2-qzvp not found for  Cl
+/global/u1/n/najoyner/lbl_pyscf/benchmarks/inorganic_benchmark/make_report.py:705: UserWarning: This figure includes Axes that are not compatible with tight_layout, so results might be incorrect.
+  fig.tight_layout(rect=(0, 0, 1, 0.965))
+findfont: Failed to find font weight bold for STIXSizeFiveSym, now using 400.
+findfont: Failed to find font weight bold for cmmi10, now using 400.
+findfont: Failed to find font weight bold for cmsy10, now using 400.
+findfont: Failed to find font weight bold for cmr10, now using 400.
+findfont: Failed to find font weight bold for cmtt10, now using 400.
+findfont: Failed to find font weight bold for cmti10, now using 400.
+findfont: Failed to find font weight bold for cmb10, now using 400.
+findfont: Failed to find font weight bold for cmss10, now using 400.
+findfont: Failed to find font weight bold for cmex10, now using 400.
+findfont: Failed to find font weight bold for DejaVu Sans Display, now using 400.

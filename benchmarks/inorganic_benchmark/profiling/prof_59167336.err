@@ -1,0 +1,22 @@
+/global/u1/n/najoyner/lbl_pyscf/gpu4pyscf/lib/cutensor.py:154: UserWarning: using cupy as the tensor contraction engine.
+  warnings.warn(f'using {contract_engine} as the tensor contraction engine.')
+ECP def2-qzvp not found for  Cl
+ECP def2-svp not found for  Cl
+WARN: HOMO 0.139969795736993 == LUMO 0.139969795736993
+ECP def2-tzvp not found for  Cl
+WARN: HOMO -0.369171595520992 == LUMO -0.369171595520991
+ECP def2-qzvp not found for  Cl
+WARN: HOMO -0.515796375311046 == LUMO -0.51579637531104
+WARN: HOMO -0.533613268634473 == LUMO -0.533613268634468
+ECP def2-svp not found for  F
+ECP def2-tzvp not found for  F
+ECP def2-qzvp not found for  F
+ECP def2-svp not found for  Cl
+WARN: HOMO 0.687114274714779 == LUMO 0.687114274716159
+WARN: HOMO 0.697422002767979 == LUMO 0.69742200276859
+ECP def2-tzvp not found for  Cl
+WARN: HOMO 0.601195497514408 == LUMO 0.601195497514489
+WARN: HOMO 0.610380896349639 == LUMO 0.610380896349858
+ECP def2-qzvp not found for  Cl
+WARN: HOMO 0.469315257261151 == LUMO 0.469315257261265
+WARN: HOMO 0.468171321257353 == LUMO 0.46817132125924

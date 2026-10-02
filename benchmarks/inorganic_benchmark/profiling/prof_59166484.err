@@ -1,0 +1,19 @@
+/global/u1/n/najoyner/lbl_pyscf/gpu4pyscf/lib/cutensor.py:154: UserWarning: using cupy as the tensor contraction engine.
+  warnings.warn(f'using {contract_engine} as the tensor contraction engine.')
+ECP def2-qzvp not found for  Cl
+ECP def2-svp not found for  Cl
+WARN: HOMO 0.139969795737001 == LUMO 0.139969795737004
+ECP def2-tzvp not found for  Cl
+WARN: HOMO -0.369171595520992 == LUMO -0.369171595520991
+ECP def2-qzvp not found for  Cl
+WARN: HOMO -0.515796375311042 == LUMO -0.515796375311034
+WARN: HOMO -0.533613268634453 == LUMO -0.533613268634452
+ECP def2-svp not found for  F
+ECP def2-tzvp not found for  F
+Traceback (most recent call last):
+  File "/global/u1/n/najoyner/lbl_pyscf/benchmarks/inorganic_benchmark/profiling/prof_components.py", line 66, in <module>
+    for k,v in tot.most_common(6): print(f'      {k} {v:7.3f}s {100*v/s:5.1f}% tasks~{tasks[k]}')
+                                                                ~~~~~^~
+ZeroDivisionError: float division by zero
+srun: error: nid002456: task 0: Exited with exit code 1
+srun: Terminating StepId=59166484.0
