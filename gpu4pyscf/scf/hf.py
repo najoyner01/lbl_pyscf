@@ -749,11 +749,17 @@ class SCF(pyscf_lib.StreamObject):
 
         self._opt_gpu = {None: None}
         self._opt_jengine = {None: None}
+        # RC3 (docs/V2_REVISION_PLAN.md): get_hcore() rebuilds the nuclear
+        # attraction integrals (a fresh Int3c2eOpt + 3c2e contraction) on every
+        # call even though h1e doesn't change across SCF cycles for a fixed
+        # mol. Cache it here, same dict-cache placement as _opt_gpu/_opt_jengine,
+        # invalidated by reset() below.
+        self._h1e_cache = None
         self._eri = None # Note: self._eri requires large amount of memory
 
     __getstate__, __setstate__ = pyscf_lib.generate_pickle_methods(
         excludes=('_eri', '_numint', '_opt', '_opt_gpu', '_opt_jengine',
-                  'chkfile', '_chkfile', 'callback'))
+                  '_h1e_cache', 'chkfile', '_chkfile', 'callback'))
 
     def build(self, mol=None):
         if mol is None: mol = self.mol
@@ -885,7 +891,12 @@ class SCF(pyscf_lib.StreamObject):
         return init_guess_by_atom(mol)
 
     def get_hcore(self, mol=None):
-        if mol is None: mol = self.mol
+        # RC3: cache h1e for the default (self.mol) case; an explicit mol
+        # argument bypasses the cache (e.g. a probe call on a different mol).
+        if mol is None:
+            if self._h1e_cache is None:
+                self._h1e_cache = get_hcore(self.mol)
+            return self._h1e_cache
         return get_hcore(mol)
 
     def get_ovlp(self, mol=None):
@@ -928,6 +939,7 @@ class SCF(pyscf_lib.StreamObject):
             self.mol = mol
         self._opt_gpu = {None: None}
         self._opt_jengine = {None: None}
+        self._h1e_cache = None
         self._eri = None
         self.scf_summary = {}
         return self

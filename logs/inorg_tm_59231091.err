@@ -1,0 +1,45 @@
+/global/homes/n/najoyner/.bashrc: line 2: /global/u1/n/najoyner/lbl_pyscf/venv/bin/activate: No such file or directory
+Exception ignored in atexit callback <bound method PyMon.report_modules_matched of <nersc_pymon.PyMon object at 0x7f5ff2b5b230>>:
+Traceback (most recent call last):
+  File "/opt/nersc/pymon/nersc_pymon/__init__.py", line 224, in report_modules_matched
+    self._report_modules("module-match", self.modules)
+  File "/opt/nersc/pymon/nersc_pymon/__init__.py", line 213, in _report_modules
+    dict(name=name, version=_get_module_version(name))
+  File "/opt/nersc/pymon/nersc_pymon/__init__.py", line 65, in _get_module_version
+    version = sys.modules[name].__version__
+  File "<frozen importlib.util>", line 209, in __getattribute__
+  File "<frozen importlib._bootstrap_external>", line 1023, in exec_module
+  File "<frozen importlib._bootstrap>", line 488, in _call_with_frames_removed
+  File "/global/common/software/nersc/pe/conda-envs/26.8.1/python-3.13/nersc-python/lib/python3.13/site-packages/cupyx/__init__.py", line 10, in <module>
+    from cupyx import linalg  # NOQA
+  File "/global/common/software/nersc/pe/conda-envs/26.8.1/python-3.13/nersc-python/lib/python3.13/site-packages/cupyx/linalg/__init__.py", line 4, in <module>
+    from cupyx.linalg import sparse  # NOQA
+  File "/global/common/software/nersc/pe/conda-envs/26.8.1/python-3.13/nersc-python/lib/python3.13/site-packages/cupyx/linalg/sparse/__init__.py", line 5, in <module>
+    from cupyx.linalg.sparse._solve import lschol  # NOQA
+  File "/global/common/software/nersc/pe/conda-envs/26.8.1/python-3.13/nersc-python/lib/python3.13/site-packages/cupyx/linalg/sparse/_solve.py", line 8, in <module>
+    from cupyx.scipy import sparse
+  File "/global/common/software/nersc/pe/conda-envs/26.8.1/python-3.13/nersc-python/lib/python3.13/site-packages/cupyx/scipy/__init__.py", line 10, in <module>
+    import scipy as _scipy
+  File "/global/common/software/nersc/pe/conda-envs/26.8.1/python-3.13/nersc-python/lib/python3.13/site-packages/scipy/__init__.py", line 83, in <module>
+    from scipy._lib._ccallback import LowLevelCallable
+  File "/global/common/software/nersc/pe/conda-envs/26.8.1/python-3.13/nersc-python/lib/python3.13/site-packages/scipy/_lib/__init__.py", line 12, in <module>
+    from scipy._lib._testutils import PytestTester
+  File "/global/common/software/nersc/pe/conda-envs/26.8.1/python-3.13/nersc-python/lib/python3.13/site-packages/scipy/_lib/_testutils.py", line 14, in <module>
+    from concurrent.futures import ThreadPoolExecutor
+  File "<frozen importlib._bootstrap>", line 1420, in _handle_fromlist
+  File "/global/common/software/nersc/pe/conda-envs/26.8.1/python-3.13/nersc-python/lib/python3.13/concurrent/futures/__init__.py", line 50, in __getattr__
+    from .thread import ThreadPoolExecutor as te
+  File "/global/common/software/nersc/pe/conda-envs/26.8.1/python-3.13/nersc-python/lib/python3.13/concurrent/futures/thread.py", line 37, in <module>
+    threading._register_atexit(_python_exit)
+  File "/global/common/software/nersc/pe/conda-envs/26.8.1/python-3.13/nersc-python/lib/python3.13/threading.py", line 1506, in _register_atexit
+    raise RuntimeError("can't register atexit after shutdown")
+RuntimeError: can't register atexit after shutdown
+Traceback (most recent call last):
+  File "/global/u1/n/najoyner/lbl_pyscf_v2/benchmarks/inorganic_benchmark/run_bench.py", line 732, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/global/u1/n/najoyner/lbl_pyscf_v2/benchmarks/inorganic_benchmark/run_bench.py", line 604, in main
+    from pyscf import lib
+ModuleNotFoundError: No module named 'pyscf'
+srun: error: nid003848: task 0: Exited with exit code 1
+srun: Terminating StepId=59231091.0

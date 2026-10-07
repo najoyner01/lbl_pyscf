@@ -264,7 +264,11 @@ class KnownValues(unittest.TestCase):
             ref -= rhf_grad._jk_energy_per_atom(opt, dm[i,0], j_factor=j_factor[i], k_factor=k_factor[i])
             ref -= rhf_grad._jk_energy_per_atom(opt, dm[i,1], j_factor=j_factor[i], k_factor=k_factor[i])
             ref *= .5
-            assert abs(ejk[i] - ref).max() < 3e-11
+            # RC1 (docs/V2_REVISION_PLAN.md): full decontraction (now the
+            # default for this small molecule) shifts this self-consistency
+            # check to ~7.2e-11 absolute against values of order ~20
+            # (relative ~3.6e-12). Loosened from 3e-11.
+            assert abs(ejk[i] - ref).max() < 1e-10
 
         ref = ejk
         dm = cp.vstack([dm]*4)
@@ -338,7 +342,12 @@ class KnownValues(unittest.TestCase):
         td_grad.cphf_max_cycle = 1
         td_grad.cphf_conv_tol = 1e-2
         dat = td_grad.grad_elec(x_y, singlet=True)
-        self.assertAlmostEqual(lib.fp(dat), -10.087508039322866, 10)
+        # RC1 (docs/V2_REVISION_PLAN.md) made the K-build diffuse_cutoff
+        # adaptive; this small molecule now defaults to full decontraction
+        # instead of the old fixed 0.3, shifting this fingerprint at the
+        # ~6e-11 level (float roundoff from a different primitive grouping).
+        # Loosened from places=10.
+        self.assertAlmostEqual(lib.fp(dat), -10.087508039382392, 9)
 
 if __name__ == "__main__":
     print("Full Tests for TD-RHF Gradient")

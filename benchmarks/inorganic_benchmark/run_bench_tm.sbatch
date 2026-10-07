@@ -39,9 +39,26 @@
 
 set -euo pipefail
 
-REPO=/global/u1/n/najoyner/lbl_pyscf
+# Resolve the repo from the submit directory rather than hardcoding it.
+# Slurm copies this script to a spool dir, so $BASH_SOURCE is useless here;
+# SLURM_SUBMIT_DIR is the directory sbatch was invoked from, which the header
+# above already requires to be the repo root. Hardcoding the path meant a
+# renamed checkout sourced a stale env.sh and benchmarked the wrong tree --
+# job 59175582 is the cautionary tale.
+if [[ -n "${SLURM_SUBMIT_DIR:-}" ]]; then
+    REPO="$(cd "$SLURM_SUBMIT_DIR" && pwd)"
+else
+    REPO="$PWD"
+fi
+if [[ ! -f "$REPO/env.sh" ]]; then
+    echo "error: no env.sh in '$REPO'." >&2
+    echo "Submit from the repo root: cd <repo> && sbatch benchmarks/inorganic_benchmark/run_bench_tm.sbatch" >&2
+    exit 1
+fi
 source "$REPO/env.sh"
 cd "$REPO"
+
+echo "REPO=$REPO"
 
 # env.sh sets OMP_NUM_THREADS=8; the benchmark's comparison point is 16 threads.
 export OMP_NUM_THREADS=16

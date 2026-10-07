@@ -314,7 +314,12 @@ def test_q_cond():
         basis=('def2-tzvp', [[0, [30, .2], [9.1, -.4], [5.1, -.5]], [4, [1, 1]]]),
     )
 
-    jkopt = jk._VHFOpt(mol).build()
+    # Pin diffuse_cutoff=0.3 explicitly: this test's general contraction is
+    # specifically chosen to stress the Schwarz-estimator cancellation under
+    # segment contraction (RC1 made diffuse_cutoff adaptive; this test is
+    # about the 0.3 branch, not whichever branch the adaptive default picks
+    # for this particular small molecule).
+    jkopt = jk._VHFOpt(mol, diffuse_cutoff=0.3).build()
     sorted_mol = jkopt.sorted_mol
     qref, sref = q_cond_reference(sorted_mol)
     nbas = sorted_mol.nbas
@@ -328,7 +333,12 @@ def test_q_cond():
     assert abs(qref[mask] - q_cond.get()).max() < 1e-3
 
     mol.omega = .25
-    jkopt = jk._VHFOpt(mol).build()
+    # Pin diffuse_cutoff=0.3 explicitly: this test's general contraction is
+    # specifically chosen to stress the Schwarz-estimator cancellation under
+    # segment contraction (RC1 made diffuse_cutoff adaptive; this test is
+    # about the 0.3 branch, not whichever branch the adaptive default picks
+    # for this particular small molecule).
+    jkopt = jk._VHFOpt(mol, diffuse_cutoff=0.3).build()
     sorted_mol = jkopt.sorted_mol
     qref, sref = q_cond_reference(sorted_mol)
     nbas = sorted_mol.nbas
@@ -342,7 +352,12 @@ def test_q_cond():
     assert abs(qref[mask] - q_cond.get()).max() < 1e-3
 
     mol.omega = -.25
-    jkopt = jk._VHFOpt(mol).build()
+    # Pin diffuse_cutoff=0.3 explicitly: this test's general contraction is
+    # specifically chosen to stress the Schwarz-estimator cancellation under
+    # segment contraction (RC1 made diffuse_cutoff adaptive; this test is
+    # about the 0.3 branch, not whichever branch the adaptive default picks
+    # for this particular small molecule).
+    jkopt = jk._VHFOpt(mol, diffuse_cutoff=0.3).build()
     sorted_mol = jkopt.sorted_mol
     qref, sref = q_cond_reference(sorted_mol)
     nbas = sorted_mol.nbas
@@ -366,7 +381,15 @@ def test_jk_get_k_sr():
     dm = cp.asarray(dm.dot(dm.T))
     mol.omega = -.3
     vk = jk.get_k(mol, dm, hermi=1)
-    assert abs(lib.fp(vk.get()) - -1.8653967312459407) < 1e-13
+    # RC1 made diffuse_cutoff adaptive; this small molecule (nbas_full well
+    # below FULL_DECONTRACT_NBAS_MAX) now defaults to full decontraction
+    # instead of the old fixed 0.3, which shifts the fingerprint at the
+    # ~1e-13 level (pure float roundoff from a different summation order --
+    # the K matrix itself agrees with the old 0.3 path to 3e-13, far inside
+    # the project's normal 1e-9/1e-10 accuracy bar). Updated fingerprint for
+    # the new default path; cross-checked against jk._VHFOpt(mol,
+    # diffuse_cutoff=0.3) to confirm it's roundoff, not a regression.
+    assert abs(lib.fp(vk.get()) - -1.8653967312457476) < 1e-13
 
 def test_jk_get_k_hermi2():
     mol = pyscf.M(atom='''
@@ -404,10 +427,67 @@ def test_jk_energy_per_atom():
 
     dm = dm.dot(dm.T)
     mol.omega = -.3
-    opt = jk._VHFOpt(mol).build()
+    # Pin diffuse_cutoff=0.3: the hardcoded fingerprint below was computed
+    # under the pre-RC1 fixed-0.3 default. This test is about
+    # _jk_energy_per_atom, not the adaptive cutoff policy, so pin the
+    # construction explicitly rather than update the magic numbers.
+    opt = jk._VHFOpt(mol, diffuse_cutoff=0.3).build()
     ejk = _jk_energy_per_atom(opt, dm, j_factor=0, k_factor=1.) * .5
     eri1 = mol.intor('int2e_ip1')
     ref = .5 * np.einsum('xijkl,jk,li->x', eri1[:,:nao//2], dm, dm[:,:nao//2])
     assert abs(ejk[0] - ref).max() < 5e-12
     ref = np.array([0.24806416996651, 1.11003753769514, 0.19967171093788])
     assert abs(ejk[0] - ref).max() < 1e-13
+
+def test_adaptive_diffuse_cutoff_correctness():
+    '''RC1 (docs/V2_REVISION_PLAN.md): _VHFOpt.build() picks diffuse_cutoff
+    adaptively when none is given. Both branches of the adaptive policy must
+    reproduce the CPU reference K/J matrices exactly as the old fixed-0.3
+    policy did -- the adaptive dispatch only changes which shells are
+    decontracted, not the integrals themselves.'''
+    mol = pyscf.M(
+        atom = '''
+        O   0.000   -0.    0.1174
+        H  -0.757    4.   -0.4696
+        H   0.757    4.   -0.4696
+        C   1.      1.    0.
+        H   4.      0.    3.
+        H   0.      1.    .6
+        ''',
+        basis='def2-tzvp',
+        unit='B',)
+    np.random.seed(9)
+    nao = mol.nao
+    dm = np.random.rand(nao, nao)
+    dm = dm.dot(dm.T)
+    ref = get_jk(mol, dm, hermi=1)
+
+    # Force each branch explicitly and check both land on the CPU reference.
+    for cutoff in (1e200, 0.3):
+        opt = jk._VHFOpt(mol, diffuse_cutoff=cutoff).build()
+        vj, vk = jk.get_jk(mol, dm, hermi=1, vhfopt=opt)
+        assert abs(vj.get() - ref[0]).max() < 1e-9
+        assert abs(vk.get() - ref[1]).max() < 1e-9
+
+    # Adaptive (default) dispatch must also agree, and for this small
+    # molecule (nbas_full well below FULL_DECONTRACT_NBAS_MAX) must pick full
+    # decontraction.
+    opt = jk._VHFOpt(mol).build()
+    assert opt._diffuse_cutoff_used == 1e200
+    vj, vk = jk.get_jk(mol, dm, hermi=1, vhfopt=opt)
+    assert abs(vj.get() - ref[0]).max() < 1e-9
+    assert abs(vk.get() - ref[1]).max() < 1e-9
+
+def test_adaptive_diffuse_cutoff_threshold():
+    '''A molecule with nbas_full above FULL_DECONTRACT_NBAS_MAX must fall back
+    to the segment-contraction policy (0.3), matching the pre-RC1 behavior
+    this was tuned for (large organic systems).'''
+    n = 20
+    atom = 'C 0 0 0\n' + '\n'.join(f'C {i*1.5:.2f} 0 0' for i in range(1, n))
+    atom += '\n' + '\n'.join(f'H {i*1.5:.2f} 0.9 0' for i in range(n))
+    mol = pyscf.M(atom=atom, basis='def2-svp')
+    nbas_full = int(mol._bas[:,gto.NPRIM_OF].sum())
+    assert nbas_full > jk.FULL_DECONTRACT_NBAS_MAX, \
+        'fixture no longer exceeds the adaptive threshold; adjust n'
+    opt = jk._VHFOpt(mol).build()
+    assert opt._diffuse_cutoff_used == 0.3

@@ -62,7 +62,12 @@ def _check_grad(mol, tol=1e-6, disp=None):
 class KnownValues(unittest.TestCase):
     def test_grad_uhf(self):
         print('---- testing UHF -------')
-        _check_grad(mol_sph, tol=1e-10)
+        # RC1 (docs/V2_REVISION_PLAN.md) made the K-build diffuse_cutoff
+        # adaptive; this molecule now defaults to full decontraction instead
+        # of the old fixed 0.3, which shifts the GPU/CPU gradient agreement
+        # from ~1e-11 to ~1.2e-10 (float roundoff from a different primitive
+        # grouping, not an accuracy regression). Loosened from 1e-10.
+        _check_grad(mol_sph, tol=2e-10)
 
     def test_grad_cart(self):
         print('---- testing UHF Cart -------')

@@ -109,7 +109,12 @@ class KnownValues(unittest.TestCase):
         ejk = rhf_grad_gpu._jk_energy_per_atom(opt, dm)
         ejk *= .5
         self.assertAlmostEqual(ejk.sum(), 0, 9)
-        self.assertAlmostEqual(lib.fp(ejk), 2710.490337642, 9)
+        # RC1 (docs/V2_REVISION_PLAN.md) made the K-build diffuse_cutoff
+        # adaptive; this small molecule now defaults to full decontraction
+        # instead of the old fixed 0.3, shifting this fingerprint at the
+        # ~7.7e-10 level (float roundoff from a different primitive grouping
+        # -- the actual CPU-reference comparison below is unaffected).
+        self.assertAlmostEqual(lib.fp(ejk), 2710.490337642773, 9)
 
         dm = dm.get()
         vj, vk = rhf_grad_cpu.get_jk(mol, dm)

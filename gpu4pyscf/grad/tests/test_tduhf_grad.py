@@ -294,7 +294,12 @@ class KnownValues(unittest.TestCase):
         td_grad.cphf_max_cycle = 0
         td_grad.cphf_conv_tol = 1e9
         dat = td_grad.grad_elec(x_y, singlet=True)
-        self.assertAlmostEqual (lib.fp(dat), -14.006578651492646, 10)
+        # RC1 (docs/V2_REVISION_PLAN.md) made the K-build diffuse_cutoff
+        # adaptive; this small molecule now defaults to full decontraction
+        # instead of the old fixed 0.3, shifting this fingerprint at the
+        # ~8.7e-10 level (float roundoff from a different primitive
+        # grouping). Loosened from places=10.
+        self.assertAlmostEqual(lib.fp(dat), -14.006578650619723, 9)
 
 if __name__ == "__main__":
     print("Full Tests for TD-UHF Gradient")

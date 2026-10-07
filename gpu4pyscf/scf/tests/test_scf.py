@@ -141,6 +141,29 @@ class KnownValues(unittest.TestCase):
         assert 'gpu' in mf.grids.__module__
         assert np.abs(e_cpu - e_gpu) < 1e-5
 
+    def test_get_hcore_cache(self):
+        '''RC3 (docs/V2_REVISION_PLAN.md): get_hcore() should cache h1e on the
+        mf object for the default (mol=None) case, and reset() should
+        invalidate it. The cached value must still match the uncached
+        free-function result exactly.'''
+        from gpu4pyscf.scf.hf import get_hcore
+        mf = gpu_scf.RHF(mol1sph)
+        h1 = mf.get_hcore()
+        h2 = mf.get_hcore()
+        assert h1 is h2  # cache hit: same object, not just equal value
+
+        ref = get_hcore(mol1sph)
+        assert cupy.abs(h1 - ref).max() == 0
+
+        mf.reset()
+        h3 = mf.get_hcore()
+        assert h3 is not h1  # invalidated: a fresh object
+        assert cupy.abs(h3 - ref).max() == 0
+
+        # Explicit mol argument bypasses the cache entirely.
+        h4 = mf.get_hcore(mol1sph)
+        assert h4 is not h3
+
 if __name__ == "__main__":
     print("Full Tests for SCF")
     unittest.main()

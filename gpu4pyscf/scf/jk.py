@@ -28,6 +28,7 @@ from pyscf.scf import _vhf
 from gpu4pyscf.lib.cupy_helper import (
     load_library, condense, transpose_sum, hermi_triu, asarray, ndarray)
 from gpu4pyscf.lib.utils import nearest_power2 as _nearest_power2
+from gpu4pyscf import __config__
 from gpu4pyscf.__config__ import num_devices, shm_size
 from gpu4pyscf.__config__ import props as gpu_specs
 from gpu4pyscf.lib import logger
@@ -56,6 +57,19 @@ GOUT_WIDTH = 42
 THREADS = 256
 GROUP_SIZE = 256
 Q_COND_MARGIN = 4.
+
+# RC1 (docs/V2_REVISION_PLAN.md): diffuse_cutoff=0.3 keeps deep core
+# contractions (e.g. an all-electron Cl 1s with 7 primitives) as a single
+# segment, which the Rys K kernel's primitive loop then walks *serially inside
+# one thread block* (lib/gvhf-rys/rys_contract_k.cu). That is cheap only when
+# the shell count stays small; for a many-atom organic system full
+# decontraction would instead blow up the shell-pair count. nbas_full (= sum
+# of nprim over the original shells, i.e. the shell count after full
+# decontraction) separates the two regimes cleanly: the TM ladder in
+# benchmarks/inorganic_benchmark tops out at 274 (IrCl6/QZVP), while a
+# representative 40-atom alkane starts at 340 (def2-SVP) and grows linearly
+# with system size. See docs/RC1.md for the chemistry.
+FULL_DECONTRACT_NBAS_MAX = getattr(__config__, 'jk_full_decontract_nbas_max', 300)
 
 def get_jk(mol, dm, hermi=0, vhfopt=None, with_j=True, with_k=True,
            omega=None, lr_factor=None, sr_factor=None, verbose=None):
@@ -405,11 +419,14 @@ def apply_coeff_C_mat(right_matrix, mol, sorted_mol, uniq_l_ctr,
     return out
 
 class _VHFOpt:
-    def __init__(self, mol, direct_scf_tol=1e-13, tile=TILE):
+    def __init__(self, mol, direct_scf_tol=1e-13, tile=TILE, diffuse_cutoff=None):
         self.mol = mol
         self.direct_scf_tol = direct_scf_tol
         self.h_shls = None
         self.tile = tile
+        # None = adaptive (RC1, see FULL_DECONTRACT_NBAS_MAX above); pass an
+        # explicit float to force the old fixed-cutoff behavior.
+        self.diffuse_cutoff = diffuse_cutoff
 
         # Hold cache on GPU devices
         self.sorted_mol = None
@@ -423,8 +440,13 @@ class _VHFOpt:
     def build(self, group_size=None, verbose=None):
         log = logger.new_logger(self.mol, verbose)
         cput0 = log.init_timer()
+        diffuse_cutoff = self.diffuse_cutoff
+        if diffuse_cutoff is None:
+            nbas_full = int(self.mol._bas[:,NPRIM_OF].sum())
+            diffuse_cutoff = 1e200 if nbas_full <= FULL_DECONTRACT_NBAS_MAX else 0.3
+        self._diffuse_cutoff_used = diffuse_cutoff
         mol = self.sorted_mol = SortedGTO.from_mol(
-            self.mol, decontract=True, diffuse_cutoff=0.3)
+            self.mol, decontract=True, diffuse_cutoff=diffuse_cutoff)
         l_ctr_counts = mol.l_ctr_counts
 
         # very high angular momentum basis are processed on CPU
